@@ -1,17 +1,18 @@
-# the inclusion of the tests module is not meant to offer best practices for
-# testing in general, but rather to support the `find_packages` example in
-# setup.py that excludes installing the "tests" package
-
-import unittest
-
-from sample.simple import add_one
+import subprocess
+import shlex
+import tempfile
 
 
-class TestSimple(unittest.TestCase):
+def run(what: str, *args):
+    what = what % args
+    cmd = shlex.split(what)
+    print(f"+ {cmd}")
+    subprocess.check_call(cmd)
 
-    def test_add_one(self):
-        self.assertEqual(add_one(5), 6)
 
-
-if __name__ == '__main__':
-    unittest.main()
+def test_1():
+    with tempfile.NamedTemporaryFile() as f:
+        tmpf = f.name
+        run("L_bash_profile profile %s 'f() { echo f; }; g() { f; echo g; }; g'", tmpf)
+        run("cat %s", tmpf)
+        run("L_bash_profile analyze %s", tmpf)
