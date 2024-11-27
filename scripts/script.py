@@ -31,6 +31,7 @@ def c():
     time.sleep(0.3)
     a()
     b()
+
     print("c")
 with tempfile.NamedTemporaryFile() as statsfile:
     cProfile.run("(b(0),b(0),b(1),b(1))", statsfile.name)
