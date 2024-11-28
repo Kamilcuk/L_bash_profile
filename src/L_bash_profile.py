@@ -10,6 +10,7 @@ import pstats
 import re
 import shlex
 import subprocess
+import sys
 import time
 from collections import Counter
 from dataclasses import astuple, dataclass, field
@@ -183,7 +184,9 @@ class AnalyzeArgs:
     pstats: Optional[str] = clickdc.option(
         help="TODO: Generate python pstats file just like python cProfile file"
     )
-    profilefile: str = clickdc.argument()
+    profilefile: Optional[io.TextIOBase] = clickdc.argument(
+        type=click.File(errors="replace", lazy=True), required=False
+    )
 
 
 @dataclass
@@ -312,7 +315,7 @@ class Analyzer:
 
     def print_stats(self):
         print(
-            f"Script {dots_trim(self.records[1].cmd)!r} executed in {timedelta(microseconds=self.execution_time_us)}us, {len(self.records)} instructions, {len(self.functions)} functions."
+            f"Script executed in {timedelta(microseconds=self.execution_time_us)}us, {len(self.records)} instructions, {len(self.functions)} functions."
         )
 
     def read(self):
@@ -325,7 +328,7 @@ class Analyzer:
                 else None
             ),
         )
-        with open(self.args.profilefile, errors="replace") as f:
+        with self.args.profilefile or sys.stdin as f:
             with multiprocessing.Pool() as pool:
                 generator = maybe_take_n(enumerate(f), self.args.linelimit)
                 self.records = [
@@ -397,6 +400,9 @@ class Analyzer:
                         called = True
                 self.functions.setdefault(t.funcname, FunctionData()).add(r, called)
             prevfunctions = currentfunctions
+
+        if not self.functions:
+            return
 
         longest_functions: list[dict] = [
             dict(
@@ -544,7 +550,7 @@ Use `source ./script.sh` to run a script.
 @click.option("-o", "--output", type=click.File("w", lazy=True))
 @click.argument("script")
 @click_help()
-def profile(output: io.FileIO, script: str):
+def profile(output: Optional[io.FileIO], script: str):
     prev = """\
 exec {_profile_fd}>"$1"
 _trap_DEBUG() {
@@ -555,14 +561,14 @@ _trap_DEBUG() {
     echo "# ${EPOCHREALTIME//./} ${BASH_COMMAND@Q} $txt"
     # L_print_traceback
 } >&"$_profile_fd"
-trap '_trap_DEBUG' DEBUG
 set -T
+trap 'trap _trap_DEBUG DEBUG' DEBUG
 eval "${@:2}"
 : END
     """
     cmd = """
 exec {_profile_fd}>"$1"
-set -T
+shift
 _profile_debug() {
     if ((${#BASH_SOURCE[@]} > 1)); then
         echo "# ${EPOCHREALTIME//[.,]/} ${BASH_COMMAND@Q} ${#BASH_SOURCE[@]} ${BASH_LINENO[0]} ${BASH_SOURCE[1]@Q} ${FUNCNAME[1]@Q}" >&"$_profile_fd"
@@ -570,14 +576,16 @@ _profile_debug() {
         echo "# ${EPOCHREALTIME//[.,]/} ${BASH_COMMAND@Q} ${#BASH_SOURCE[@]} ${BASH_LINENO[0]}" >&"$_profile_fd"
     fi
 }
-trap '_profile_debug' DEBUG
-eval "${@:2}"
+set -T
+trap 'trap _profile_debug DEBUG' DEBUG
+eval "$@"
 : END
 """
-    cmd = ["bash", "-c", cmd, "bash", output.name, script]
-    print(f"PROFILING: {script} to {output.name}")
+    profilefile = "/dev/stdout" if not output or output == sys.stdout else output.name
+    cmd = ["bash", "-c", cmd, "bash", profilefile, script]
+    print(f"PROFILING: {script} to {profilefile}", file=sys.stderr)
     subprocess.run(cmd)
-    print(f"PROFING ENDED, output in {output.name}")
+    print(f"PROFING ENDED, output in {profilefile}", file=sys.stderr)
 
 
 @cli.command(
