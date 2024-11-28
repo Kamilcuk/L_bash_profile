@@ -4,15 +4,24 @@ import tempfile
 
 
 def run(what: str, *args):
-    what = what % args
+    what = what % tuple([shlex.quote(x) if isinstance(x, str) else x for x in args])
     cmd = shlex.split(what)
-    print(f"+ {cmd}")
+    cmdstr = " ".join(shlex.quote(x) for x in cmd)
+    print(f"+ {cmdstr}")
     subprocess.check_call(cmd)
+    print()
 
 
 def test_1():
     with tempfile.NamedTemporaryFile() as f:
         tmpf = f.name
-        run("L_bash_profile profile %s 'f() { echo f; }; g() { f; echo g; }; g'", tmpf)
+        run(
+            "L_bash_profile profile --output %s 'f() { echo f; }; g() { f; echo g; }; g'",
+            tmpf,
+        )
         run("cat %s", tmpf)
-        run("L_bash_profile analyze %s", tmpf)
+        with tempfile.NamedTemporaryFile() as f2:
+            dotf = f2.name
+            run("L_bash_profile analyze --pstats %s %s", dotf, tmpf)
+            run("L_bash_profile pstatsprint %s", dotf)
+            run("L_bash_profile pstatsprint --raw %s", dotf)

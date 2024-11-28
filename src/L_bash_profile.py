@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import marshal
 import multiprocessing
 import os
@@ -14,7 +15,7 @@ from collections import Counter
 from dataclasses import astuple, dataclass, field
 from datetime import timedelta
 from functools import cached_property
-from typing import Iterable, Optional, TypeVar, overload
+from typing import Iterable, List, Optional, TypeVar
 
 import click
 import clickdc
@@ -25,21 +26,6 @@ from tabulate import tabulate
 
 T = TypeVar("T")
 V1 = TypeVar("V1")
-V2 = TypeVar("V2")
-V3 = TypeVar("V3")
-
-
-@overload
-def zip_dicts(a: dict[T, V1], /) -> dict[T, tuple[V1]]: ...
-@overload
-def zip_dicts(a: dict[T, V1], b: dict[T, V2], /) -> dict[T, tuple[V1, V2]]: ...
-@overload
-def zip_dicts(
-    a: dict[T, V1], b: dict[T, V2], c: dict[T, V3], /
-) -> dict[T, tuple[V1, V2, V3]]: ...
-def zip_dicts(*dicts):
-    """Zip dictionaries to same keys and tuple values"""
-    return dict((k, tuple(d[k] for d in dicts)) for k in dicts[0])
 
 
 def dots_trim(v: str, width: int = 50) -> str:
@@ -118,7 +104,7 @@ class Record:
     """How long did the instruction take? Substraction of EPOCHREALTIME from the next instruction"""
 
 
-class Records(list[Record]):
+class Records(List[Record]):
     """An array of records"""
 
     @property
@@ -186,11 +172,13 @@ class Pstats(PstatsCallers):
 class AnalyzeArgs:
     """Command line arguments"""
 
+    showanalyzetimes: Optional[bool] = clickdc.option()
     linelimit: Optional[int] = clickdc.option(
         help="From the input file, parse only that many lines from the top. This is used to reduce the numebr of analyzed lines for testing"
     )
     dotcallgraph: Optional[str] = clickdc.option(
-        "--dot", help="Output file for dot graph. Use xdot <file> to view."
+        "--dot",
+        help="Output file for dot callgraph file. Use for example `xdot <file>` to view.",
     )
     dotcallgraphlimit: int = clickdc.option(
         "--dotlimit",
@@ -204,7 +192,7 @@ class AnalyzeArgs:
     filterfunction: Optional[str] = clickdc.option(
         help="Only filter execution time of this particular function. Usefull for analysis of a single bash function execution"
     )
-    pstatsfile: Optional[str] = clickdc.option(
+    pstats: Optional[str] = clickdc.option(
         help="TODO: Generate python pstats file just like python cProfile file"
     )
     profilefile: str = clickdc.argument()
@@ -220,11 +208,10 @@ class RecordsSpentInterface:
         self.spent += rr.spent_us
 
     def get_example(self):
-        t = next(
-            (rr.trace[0] for rr in self.records if rr.trace),
-            None,
-        )
-        return f"{t.filename}:{t.lineno}" if t else ""
+        cmdcnt = Counter(r.cmd for r in self.records)
+        most_common_cmd: str = cmdcnt.most_common(1)[0][0]
+        r: Record = next(r for r in self.records if r.cmd == most_common_cmd)
+        return f"{r.source or '~'}:{r.lineno}"
 
 
 @dataclass
@@ -311,31 +298,33 @@ class Analyzer:
     callgraph: Optional[CallgraphNode] = None
 
     def run(self):
-        with Timeit(f"Reading {self.args.profilefile}"):
+        with self.timeit(f"Reading {self.args.profilefile}"):
             self.read()
-        with Timeit("Calculating traces and time spent"):
+        with self.timeit("Calculating traces and time spent"):
             self.infer_records_backtrace()
             self.calculate_records_spent_time()
-        with Timeit("Getting longest commands"):
+        with self.timeit("Getting longest commands"):
             self.print_top_longest_commands()
-        with Timeit("Getting longest functions"):
+        with self.timeit("Getting longest functions"):
             self.print_top_longest_functions()
         if self.args.dotcallgraph:
-            with Timeit("Generating dot callgraph"):
+            with self.timeit("Generating dot callgraph"):
                 self.extract_callgraph(self.args.dotcallgraph)
-        if self.args.pstatsfile:
-            with Timeit("Generting pstats file"):
-                self.create_python_pstats_file(self.args.pstatsfile)
+        if self.args.pstats:
+            with self.timeit("Generting pstats file"):
+                self.create_python_pstats_file(self.args.pstats)
         self.print_stats()
+
+    def timeit(self, name: str):
+        return Timeit(name if self.args.showanalyzetimes else "")
 
     @cached_property
     def execution_time_us(self):
         return self.records[-1].stamp_us - self.records[0].stamp_us
 
     def print_stats(self):
-        print()
         print(
-            f"Command executed in {timedelta(microseconds=self.execution_time_us)}us, {len(self.records)} instructions, {len(self.functions)} functions."
+            f"Script {dots_trim(self.records[1].cmd)!r} executed in {timedelta(microseconds=self.execution_time_us)}us, {len(self.records)} instructions, {len(self.functions)} functions."
         )
 
     def read(self):
@@ -403,9 +392,9 @@ class Analyzer:
                 key=lambda x: -x[1].spent,
             )[:20]
         ]
-        print()
         print(f"Top {len(longest_commands)} cummulatively longest commands:")
         print(tabulate(longest_commands, headers="keys"))
+        print()
 
     def print_top_longest_functions(self):
         self.functions = {}
@@ -437,9 +426,9 @@ class Analyzer:
                 key=lambda x: -x[1].spent,
             )[:20]
         ]
-        print()
         print(f"Top {len(longest_functions)} cummulatively longest functions:")
         print(tabulate(longest_functions, headers="keys"))
+        print()
 
     def get_callgraph(self):
         # Create callgraph
@@ -498,7 +487,7 @@ class Analyzer:
         callgraph = self.get_callgraph()
         statsroot: dict[FunctionKey, Pstats] = {}
 
-        def fillstats( node: CallgraphNode):
+        def fillstats(node: CallgraphNode):
             cur = PstatsCallers.from_node(node)
             stats: Pstats = statsroot.setdefault(node.function, Pstats())
             stats.add(cur)
@@ -534,6 +523,7 @@ class Analyzer:
         with open(file, "wb") as f:
             marshal.dump(pstats, f)
         print(f"pstats file written to {file}")
+        print()
 
 
 ###############################################################################
@@ -541,6 +531,7 @@ class Analyzer:
 
 @click.group(
     help="""
+Profile execution of bash scripts.
 """
 )
 @click_help()
@@ -552,13 +543,14 @@ def cli():
     help="""
 Generate profiling information of a given Bash script to PROFILEFILE.
 
-Note: the script has to run in the current execution environment.
+The script has to run commands in the current execution environment.
+Use `source ./script.sh` to run a script.
 """
 )
-@click.argument("profilefile")
+@click.option("-o", "--output", type=click.File("w", lazy=True))
 @click.argument("script")
 @click_help()
-def profile(profilefile: str, script: str):
+def profile(output: io.FileIO, script: str):
     prev = """\
 exec {_profile_fd}>"$1"
 _trap_DEBUG() {
@@ -579,25 +571,24 @@ exec {_profile_fd}>"$1"
 set -T
 _profile_debug() {
     if ((${#BASH_SOURCE[@]} > 1)); then
-        echo "# ${EPOCHREALTIME//[.,]/} ${BASH_COMMAND@Q} ${#BASH_SOURCE[@]} ${BASH_LINENO[0]} ${BASH_SOURCE[1]@Q} ${FUNCNAME[1]@Q}"
+        echo "# ${EPOCHREALTIME//[.,]/} ${BASH_COMMAND@Q} ${#BASH_SOURCE[@]} ${BASH_LINENO[0]} ${BASH_SOURCE[1]@Q} ${FUNCNAME[1]@Q}" >&"$_profile_fd"
     else
-        echo "# ${EPOCHREALTIME//[.,]/} ${BASH_COMMAND@Q} ${#BASH_SOURCE[@]} ${BASH_LINENO[0]}"
+        echo "# ${EPOCHREALTIME//[.,]/} ${BASH_COMMAND@Q} ${#BASH_SOURCE[@]} ${BASH_LINENO[0]}" >&"$_profile_fd"
     fi
-} >&"$_profile_fd"
+}
 trap '_profile_debug' DEBUG
 eval "${@:2}"
 : END
 """
-    cmd = ["bash", "-c", cmd, "bash", profilefile, script]
-    print(f"PROFILING: {cmd}")
+    cmd = ["bash", "-c", cmd, "bash", output.name, script]
+    print(f"PROFILING: {script} to {output.name}")
     subprocess.run(cmd)
-    print(f"PROFING ENDED, output in {profilefile}")
-    # subprocess.run(["tail", "-n20", file])
+    print(f"PROFING ENDED, output in {output.name}")
 
 
 @cli.command(
     help="""
-Analyze profiling information.
+Analyze profiling information stored in PROFILEFILE.
     """
 )
 @click_help()
@@ -606,14 +597,25 @@ def analyze(args: AnalyzeArgs):
     Analyzer(args).run()
 
 
-@cli.command()
-@click.argument("file")
-def pstatsprint(file: str):
-    ps = pstats.Stats(file)
-    sortby = "cumulative"
-    ps.strip_dirs().sort_stats(sortby).print_stats(
-        0.3
-    )  # plink around with this to get the results you need
+@cli.command(help="print pstats data")
+@click.option("-r", "--raw", is_flag=True, help="Just print marshal file content")
+@click.argument("file", type=click.File("rb", lazy=True))
+def i_pstatsprint(raw: bool, file: io.FileIO):
+    if raw:
+        stats = marshal.load(file)
+        for key, val in stats.items():
+            print(
+                f"{key[0]}:{key[1]}({key[2]})\tnc={val[0]} cc={val[1]} tt={val[2]:f} ct={val[3]:f}"
+            )
+            for key, val in (val[4] or {}).items():
+                print(
+                    f" ^ {key[0]}:{key[1]}({key[2]})\tnc={val[0]} cc={val[1]} tt={val[2]:f} ct={val[3]:f}"
+                )
+    else:
+        ps = pstats.Stats(file.name)
+        sortby = "cumulative"
+        ps.strip_dirs().sort_stats(sortby).print_stats()
+        # plink around with this to get the results you need
 
 
 ###############################################################################

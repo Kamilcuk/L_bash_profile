@@ -12,4 +12,5 @@ venv/
 # due to using nox and pytest
 .nox
 .cache
+
 profile.*

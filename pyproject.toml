@@ -8,13 +8,20 @@ license = { file = "LICENSE.txt" }
 keywords = ["bash", "profile", "development"]
 authors = [{ name = "Kamil Cukrowski", email = "kamilcukrowski@gmail.com" }]
 maintainers = [{ name = "Kamil Cukrowski", email = "kamilcukrowski@gmail.com" }]
-dependencies = ["graphviz", "tabulate", "click", "clickdc"]
+dynamic = ["dependencies", "optional-dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+optional-dependencies = {test = { file = ["requirements-test.txt"] }}
+
 [project.urls]
 "Homepage" = "https://github.com/kamilcuk/L_bash_profile"
 "Bug Reports" = "https://github.com/kamilcuk/L_bash_profile/issues"
 "Source" = "https://github.com/kamilcuk/L_bash_profile/"
+
 [project.scripts]
 L_bash_profile = "L_bash_profile:cli.main"
+
 [tool.pytest.ini_options]
 minversion = "6.0"
 addopts = "--tb=short"
@@ -28,3 +35,10 @@ filterwarnings = [
 log_file_format = "%(asctime)s %(levelname)s %(filename)s:%(lineno)s %(message)s"
 log_file_level = "DEBUG"
 
+[tool.pyright]
+include = ["src"]
+pythonVersion = "3.7"
+typeCheckingMode = "basic"
+reportUnnecessaryComparison = "error"
+reportUnusedParameter = false
+reportUnknownParameterType = false
