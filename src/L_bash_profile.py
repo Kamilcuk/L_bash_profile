@@ -600,16 +600,16 @@ def analyze(args: AnalyzeArgs):
 @cli.command(help="print pstats data")
 @click.option("-r", "--raw", is_flag=True, help="Just print marshal file content")
 @click.argument("file", type=click.File("rb", lazy=True))
-def i_pstatsprint(raw: bool, file: io.FileIO):
+def showpstats(raw: bool, file: io.FileIO):
     if raw:
         stats = marshal.load(file)
         for key, val in stats.items():
             print(
-                f"{key[0]}:{key[1]}({key[2]})\tnc={val[0]} cc={val[1]} tt={val[2]:f} ct={val[3]:f}"
+                f"{key[0]}:{key[1]}({key[2]})  nc={val[0]} cc={val[1]} tt={val[2]:f} ct={val[3]:f}"
             )
             for key, val in (val[4] or {}).items():
                 print(
-                    f" ^ {key[0]}:{key[1]}({key[2]})\tnc={val[0]} cc={val[1]} tt={val[2]:f} ct={val[3]:f}"
+                    f" ^ {key[0]}:{key[1]}({key[2]})  nc={val[0]} cc={val[1]} tt={val[2]:f} ct={val[3]:f}"
                 )
     else:
         ps = pstats.Stats(file.name)

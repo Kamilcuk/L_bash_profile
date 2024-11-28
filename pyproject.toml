@@ -23,15 +23,14 @@ optional-dependencies = {test = { file = ["requirements-test.txt"] }}
 L_bash_profile = "L_bash_profile:cli.main"
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 minversion = "6.0"
 addopts = "--tb=short"
 log_cli = true
 log_cli_level = "DEBUG"
 log_cli_format = "%(asctime)s %(levelname)s %(filename)s:%(lineno)s %(message)s"
 log_cli_date_format = "%H:%M:%S"
-filterwarnings = [
-	"ignore::DeprecationWarning",
-]
+filterwarnings = ["ignore::DeprecationWarning"]
 log_file_format = "%(asctime)s %(levelname)s %(filename)s:%(lineno)s %(message)s"
 log_file_level = "DEBUG"
 

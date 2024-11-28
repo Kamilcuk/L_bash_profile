@@ -23,5 +23,5 @@ def test_1():
         with tempfile.NamedTemporaryFile() as f2:
             dotf = f2.name
             run("L_bash_profile analyze --pstats %s %s", dotf, tmpf)
-            run("L_bash_profile pstatsprint %s", dotf)
-            run("L_bash_profile pstatsprint --raw %s", dotf)
+            run("L_bash_profile showpstats %s", dotf)
+            run("L_bash_profile showpstats --raw %s", dotf)
