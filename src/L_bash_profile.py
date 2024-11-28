@@ -551,33 +551,14 @@ Use `source ./script.sh` to run a script.
 @click.argument("script")
 @click_help()
 def profile(output: Optional[io.FileIO], script: str):
-    prev = """\
-exec {_profile_fd}>"$1"
-_trap_DEBUG() {
-    local i txt=""
-	for ((i = 1; i != ${#BASH_SOURCE[@]}; ++i)); do
-		txt+=" $i ${BASH_SOURCE[i]@Q} ${BASH_LINENO[i]} ${FUNCNAME[i]@Q}"
-    done
-    echo "# ${EPOCHREALTIME//./} ${BASH_COMMAND@Q} $txt"
-    # L_print_traceback
-} >&"$_profile_fd"
-set -T
-trap 'trap _trap_DEBUG DEBUG' DEBUG
-eval "${@:2}"
-: END
-    """
-    cmd = """
-exec {_profile_fd}>"$1"
+    cmd = r"""
+exec {_L_bash_profile_fd}>"$1"
 shift
-_profile_debug() {
-    if ((${#BASH_SOURCE[@]} > 1)); then
-        echo "# ${EPOCHREALTIME//[.,]/} ${BASH_COMMAND@Q} ${#BASH_SOURCE[@]} ${BASH_LINENO[0]} ${BASH_SOURCE[1]@Q} ${FUNCNAME[1]@Q}" >&"$_profile_fd"
-    else
-        echo "# ${EPOCHREALTIME//[.,]/} ${BASH_COMMAND@Q} ${#BASH_SOURCE[@]} ${BASH_LINENO[0]}" >&"$_profile_fd"
-    fi
+_L_bash_profile_debug() {
+    printf "# %s %q %s %s %q %q\n" "${EPOCHREALTIME//[.,]}" "$BASH_COMMAND" "${#BASH_SOURCE[@]}" "${BASH_LINENO[0]}" "${BASH_SOURCE[1]:-}" "${FUNCNAME[1]:-}" >&"$_L_bash_profile_fd"
 }
 set -T
-trap 'trap _profile_debug DEBUG' DEBUG
+trap 'trap _L_bash_profile_debug DEBUG' DEBUG
 eval "$@"
 : END
 """
