@@ -79,6 +79,9 @@ class FunctionKey:
     lineno: int = 0
     funcname: str = ""
 
+    def __str__(self):
+        return f"{self.filename}:{self.lineno}({self.funcname})"
+
 
 @dataclass
 class Record:
@@ -137,7 +140,7 @@ class CallgraphNode:
 
 
 @dataclass
-class PstatsCallers:
+class Pstatsnocallers:
     """Statistics for pstats python module"""
 
     callcount: int = 0
@@ -145,27 +148,12 @@ class PstatsCallers:
     inlinetime: float = 0
     totaltime: float = 0
 
-    @staticmethod
-    def from_node(node: CallgraphNode):
-        return PstatsCallers(
-            node.callcount,
-            node.callcount - node.recursivecallcount,
-            us2s(node.inlinetime),
-            us2s(node.totaltime),
-        )
-
-    def add(self, o: PstatsCallers):
-        self.callcount += o.callcount
-        self.primitivecallcount += o.primitivecallcount
-        self.inlinetime += o.inlinetime
-        self.totaltime += o.totaltime
-
 
 @dataclass
-class Pstats(PstatsCallers):
+class Pstats(Pstatsnocallers):
     """Statistics for pstats python module"""
 
-    callers: dict[FunctionKey, PstatsCallers] = field(default_factory=dict)
+    callers: dict[FunctionKey, Pstatsnocallers] = field(default_factory=dict)
 
 
 @dataclass
@@ -488,30 +476,36 @@ class Analyzer:
         statsroot: dict[FunctionKey, Pstats] = {}
 
         def fillstats(node: CallgraphNode):
-            cur = PstatsCallers.from_node(node)
-            stats: Pstats = statsroot.setdefault(node.function, Pstats())
-            stats.add(cur)
-            parent = node.parent
-            while parent is not None:
-                cur = PstatsCallers.from_node(parent)
-                stats.callers.setdefault(parent.function, PstatsCallers()).add(cur)
-                parent = parent.parent
-            for val in node.childs.values():
-                fillstats(val)
+            nodestats = statsroot.setdefault(node.function, Pstats())
+            nodestats.callcount += node.callcount
+            nodestats.primitivecallcount += node.callcount - node.recursivecallcount
+            nodestats.totaltime += us2s(node.totaltime)
+            nodestats.inlinetime += us2s(node.inlinetime)
+            for child in node.childs.values():
+                fillstats(child)
+                childstats = statsroot.setdefault(
+                    child.function, Pstats()
+                ).callers.setdefault(node.function, Pstatsnocallers())
+                childstats.callcount += 1
+                childstats.primitivecallcount += 1
+                childstats.inlinetime += us2s(child.inlinetime)
+                childstats.totaltime += us2s(child.totaltime)
+                if child.function == node.function:
+                    nodestats.totaltime -= us2s(child.totaltime)
 
         fillstats(callgraph)
 
         # Write pstats file
         def writer(what: Pstats):
             return (
-                what.callcount,
                 what.primitivecallcount,
+                what.callcount,
                 what.inlinetime,
                 what.totaltime,
                 {
                     astuple(key): (
-                        val.callcount,
                         val.primitivecallcount,
+                        val.callcount,
                         val.inlinetime,
                         val.totaltime,
                     )
@@ -602,15 +596,20 @@ def analyze(args: AnalyzeArgs):
 @click.argument("file", type=click.File("rb", lazy=True))
 def showpstats(raw: bool, file: io.FileIO):
     if raw:
-        stats = marshal.load(file)
-        for key, val in stats.items():
+
+        def sortthem(x: dict):
+            return sorted(x.items())
+
+        def printit(prefix, key, val):
             print(
-                f"{key[0]}:{key[1]}({key[2]})  nc={val[0]} cc={val[1]} tt={val[2]:f} ct={val[3]:f}"
+                f"{prefix}{key[0]}:{key[1]}({key[2]})  cc={val[0]} nc={val[1]} tt={val[2]:f} ct={val[3]:f}"
             )
-            for key, val in (val[4] or {}).items():
-                print(
-                    f" ^ {key[0]}:{key[1]}({key[2]})  nc={val[0]} cc={val[1]} tt={val[2]:f} ct={val[3]:f}"
-                )
+
+        stats = marshal.load(file)
+        for key, val in sortthem(stats):
+            printit("", key, val)
+            for key2, val2 in sortthem(val[4] or {}):
+                printit(" ^ ", key2, val2)
     else:
         ps = pstats.Stats(file.name)
         sortby = "cumulative"
