@@ -10,6 +10,8 @@ L_bash_profile provides deterministic profiling of Bash programs. A _profile_ is
 * [Subcommands](#subcommands)
   * [profile](#profile)
   * [analyze](#analyze)
+* [Example output](#example-output)
+  * [Example2](#example2)
 * [LICENSE](#license)
 
 <!-- vim-markdown-toc -->
@@ -138,6 +140,47 @@ Top 20 cummulatively longest functions:
   1.13184      23_921  _L_list_functions_with_prefix_v            1       23921                 455              455        ../L_lib/bin/L_lib.sh:560
 
 Script executed in 0:00:02.113461us, 28867 instructions, 123 functions.
+```
+
+## Example2
+
+```
+$ L_bash_profile profile -n500 -b 'f() { "$@"; }; g() { "$@"; }; i=1' 'f eval "(($i))"; g test "$i" = 0;' | L_bash_profile analyze
+PROFILING: 'f eval "(($i))"; g test "$i" = 0;' to /dev/stdout
+PROFING ENDED, output in /dev/stdout
+Top 6 cummulatively longest commands:
+  percent    spent_us  cmd               calls    spentPerCall  topCaller1    topCaller2    topCaller3    example
+---------  ----------  --------------  -------  --------------  ------------  ------------  ------------  -------------
+31.4807        14_121  'test 1 = 0'        500          28.242  g 500                                     environment:6
+18.8269         8_445  '(( 1 ))'           500          16.89   f 500                                     environment:6
+17.2329         7_730  'f eval ((1))'      500          15.46   > 500                                     <:7
+16.689          7_486  'g test 1 = 0'      500          14.972  > 500                                     <:7
+15.6701         7_029  'eval ((1))'        500          14.058  f 500                                     environment:6
+ 0.100321          45  'i=1'                 1          45      > 1                                       <:6
+
+Top 6 cummulatively longest commands per call:
+  percent    spent_us  cmd               calls    spentPerCall  topCaller1    topCaller2    topCaller3    example
+---------  ----------  --------------  -------  --------------  ------------  ------------  ------------  -------------
+ 0.100321          45  'i=1'                 1          45      > 1                                       <:6
+31.4807        14_121  'test 1 = 0'        500          28.242  g 500                                     environment:6
+18.8269         8_445  '(( 1 ))'           500          16.89   f 500                                     environment:6
+17.2329         7_730  'f eval ((1))'      500          15.46   > 500                                     <:7
+16.689          7_486  'g test 1 = 0'      500          14.972  > 500                                     <:7
+15.6701         7_029  'eval ((1))'        500          14.058  f 500                                     environment:6
+
+Top 2 cummulatively longest functions:
+  percent    spent_us  funcname      calls    spentPerCall    instructions    instructionsPerCall  location
+---------  ----------  ----------  -------  --------------  --------------  ---------------------  -------------
+  34.4971      15_474  f               500          30.948            1000                      2  environment:6
+  31.4807      14_121  g               500          28.242             500                      1  environment:6
+
+Top 2 cummulatively longest functions per call:
+  percent    spent_us  funcname      calls    spentPerCall    instructions    instructionsPerCall  location
+---------  ----------  ----------  -------  --------------  --------------  ---------------------  -------------
+  34.4971      15_474  f               500          30.948            1000                      2  environment:6
+  31.4807      14_121  g               500          28.242             500                      1  environment:6
+
+Script executed in 0:00:00.044856us, 2501 instructions, 2 functions.
 ```
 
 # LICENSE

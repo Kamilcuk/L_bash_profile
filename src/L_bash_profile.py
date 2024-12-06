@@ -17,7 +17,7 @@ from collections import Counter
 from dataclasses import astuple, dataclass, field
 from datetime import timedelta
 from functools import cached_property
-from typing import Iterable, List, Optional, TypeVar, Union, cast
+from typing import Iterable, List, Optional, Tuple, TypeVar, Union, cast
 
 import click
 import clickdc
@@ -345,7 +345,7 @@ class RecordsSpentInterface:
 
 
 @dataclass
-class FunctionData(RecordsSpentInterface):
+class FunctionStats(RecordsSpentInterface):
     """Accumulated data about a single function"""
 
     calls: int = 0
@@ -372,7 +372,7 @@ class Timeit:
 
 
 @dataclass
-class CommandData(RecordsSpentInterface):
+class CommandStats(RecordsSpentInterface):
     """Accumulated data about a single command"""
 
     callers: Counter[str] = field(default_factory=Counter)
@@ -383,32 +383,39 @@ class CommandData(RecordsSpentInterface):
 
 
 # List of bash scripts used for profiling.
-PROFILEMETHODS: dict[str, str] = dict(
-    XTRACE=r"""
+PROFILEMETHODS: dict[str, str] = {
+    "XTRACE": r"""
 export BASH_XTRACEFD PS4='+ ${EPOCHREALTIME//[.,]} ${#BASH_SOURCE[@]} ${LINENO:-0} ${BASH_SOURCE[0]:-<} ${FUNCNAME[0]:->} '
 exec {BASH_XTRACEFD}>"$1"
 shift
 set -x
-eval "$@"
+@@
 : END
 """,
-    DEBUG=r"""
+    "DEBUG": r"""
 set -T
 exec {_L_bash_profile_fd}>"$1"
 shift
 trap 'printf "# %s %s %s %q %q %q\n" "${EPOCHREALTIME//[.,]}" "${#BASH_SOURCE[@]}" "${LINENO:-0}" "${BASH_SOURCE[0]:-<}" "${FUNCNAME[0]:->}" "$BASH_COMMAND" >&"$_L_bash_profile_fd"' DEBUG
-eval "$@"
+@@
 : END
 """,
-    VAR=r"""
+    "VAR": r"""
 set -T
 readonly _L_bash_profile_file=$1
 shift
 declare -a _L_bash_profile_var='()'
 trap 'printf -v "_L_bash_profile_var[${#_L_bash_profile_var[@]}]" "# %s %s %s %q %q %q"   "${EPOCHREALTIME//[.,]}" "${#BASH_SOURCE[@]}" "${LINENO:-0}" "${BASH_SOURCE[0]:-<}" "${FUNCNAME[0]:->}" "$BASH_COMMAND"' DEBUG
-eval "$@"
+@@
 printf "%s\n" "${_L_bash_profile_var[@]}" >"$_L_bash_profile_file"
 """,
+}
+PROFILEMETHODS.update(
+    {
+        "1": PROFILEMETHODS["XTRACE"],
+        "2": PROFILEMETHODS["DEBUG"],
+        "3": PROFILEMETHODS["VAR"],
+    }
 )
 
 
@@ -573,18 +580,18 @@ class Analyzer:
 
     def print_top_longest_commands(self):
         callgraph = self.get_callgraph
-        self.commands: dict[str, CommandData] = {}
+        self.commands: dict[str, CommandStats] = {}
 
         def traverse_for_top_longest_commands(node: CallgraphNode):
             for rr in node.records:
                 if isinstance(rr, Record):
-                    self.commands.setdefault(rr.cmd, CommandData()).add(rr)
+                    self.commands.setdefault(rr.cmd, CommandStats()).add(rr)
                 else:
                     traverse_for_top_longest_commands(rr)
 
         traverse_for_top_longest_commands(callgraph)
 
-        def get_top_caller(v: CommandData, i: int):
+        def get_top_caller(v: CommandStats, i: int):
             if len(v.callers) <= i:
                 return ""
             x = v.callers.most_common()[i]
@@ -625,25 +632,28 @@ class Analyzer:
 
     def print_top_longest_functions(self):
         callgraph = self.get_callgraph
-        self.functions: dict[FunctionKey, FunctionData] = {}
+        self.functions: dict[FunctionKey, FunctionStats] = {}
 
         def traverse_for_top_longest_functions(node: CallgraphNode):
             for rr in node.records:
                 if isinstance(rr, Record):
-                    self.functions.setdefault(node.function, FunctionData()).add_record(
-                        rr
-                    )
+                    self.functions.setdefault(
+                        node.function, FunctionStats()
+                    ).add_record(rr)
                 else:
-                    tmp = self.functions.setdefault(rr.function, FunctionData())
+                    tmp = self.functions.setdefault(rr.function, FunctionStats())
                     tmp.calls += 1
                     traverse_for_top_longest_functions(rr)
 
         traverse_for_top_longest_functions(callgraph)
+        if FunctionKey() in self.functions:
+            del self.functions[FunctionKey()]
 
         if not self.functions:
+            print("No functions found")
             return
 
-        def gen_func_desc(func: FunctionKey, v: FunctionData):
+        def gen_func_desc(func: FunctionKey, v: FunctionStats):
             return dict(
                 percent=v.spent / callgraph.totaltime * 100,
                 spent_us=f"{v.spent:_}",
@@ -859,11 +869,53 @@ class Analyzer:
 @click.group(
     help="""
 Profile execution of bash scripts.
-"""
+""",
+    epilog="""
+Written by Kamil Cukrowski 2024. Licensed under GPLv3.
+    """,
 )
 @click_help()
 def cli():
     pass
+
+
+@dataclass
+class ProfileArgs:
+    """Command line arguments"""
+
+    output: Optional[io.FileIO] = clickdc.option(
+        "-o",
+        type=click.File("w", lazy=True),
+        help="Output file for profiling information.",
+    )
+    method: str = clickdc.option(
+        "-m",
+        default="XTRACE",
+        type=click.Choice(list(PROFILEMETHODS.keys()), case_sensitive=False),
+        help="""
+        Chooses the method to profile the script.
+        1 or XTRACE uses set -x with BASH_XTRACEFD and FD4 to output the commands.
+        2 or DEBUG uses trap DEBUG to output executed commands to a file.
+        3 or VAR uses trap DEBUG to append commands to an array and then write it to a file on the end of execution.
+        XTRACE is the fastest.
+        DEBUG is the most reliable.
+        VAR does not handle subshells.
+        """,
+    )
+    repeat: int = clickdc.option(
+        "-n", default=1, help="Repeat the script n times joined with newlines."
+    )
+    before: str = clickdc.option(
+        "-b",
+        help="Commands to run before the script. Use to set up the environment.",
+        default="",
+        required=False,
+    )
+    dryrun: bool = clickdc.option(
+        help="Do not run the script, just print the generated script."
+    )
+    script: str = clickdc.argument()
+    args: tuple[str, ...] = clickdc.argument(nargs=-1)
 
 
 @cli.command(
@@ -872,28 +924,32 @@ Generate profiling information of a given Bash script to PROFILEFILE.
 
 The script has to run commands in the current execution environment.
 Use `source ./script.sh` to run a script.
-"""
+
+Further arguments to the script are passed as ARGS.
+""",
+    epilog="""
+\b
+Example:
+    L_bash_profile profile -n10 'echo hello world' | L_bash_profile analyze
+    L_bash_profile profile -n200 -b i=0 '((i)); [[ $i ]]; [[ "$i" ]]; [ "$i" ]; [ $i ]' | L_bash_profile analyze
+    L_bash_profile profile -n500 -b 'f() { "$@"; }; g() { "$@"; }; i=1' 'f eval "(($i))"; g test "$i" = 0;' | L_bash_profile analyze
+""",
 )
-@click.option("-o", "--output", type=click.File("w", lazy=True))
-@click.option(
-    "-m",
-    "--method",
-    type=click.Choice(list(PROFILEMETHODS.keys()), case_sensitive=False),
-    default="XTRACE",
-    help="""
-        Choose the method to profile the script.
-        XTRACE uses set -x with BASH_XTRACEFD and FD4 to output the commands.
-        DEBUG uses trap DEBUG to output the commands to a file.
-        VAR uses trap DEBUG to append commands to an array and then write it to a file on the end of execution.
-        XTRACE is the fastest.
-        """,
-)
-@click.argument("script")
 @click_help()
-def profile(output: Optional[io.FileIO], method: str, script: str):
-    profilefile = "/dev/stdout" if not output or output == sys.stdout else output.name
-    cmd = ["bash", "-c", PROFILEMETHODS[method], "bash", profilefile, script]
-    print(f"PROFILING: {script} to {profilefile}", file=sys.stderr)
+@clickdc.adddc("args", ProfileArgs)
+def profile(args: ProfileArgs):
+    profilefile = (
+        "/dev/stdout"
+        if not args.output or args.output == sys.stdout
+        else args.output.name
+    )
+    script = "\n".join([args.before] + [args.script] * args.repeat)
+    script = PROFILEMETHODS[args.method].replace("@@", script)
+    cmd = ["bash", "-c", script, "bash", profilefile, *args.args]
+    if args.dryrun:
+        print(" ".join(shlex.quote(x) for x in cmd))
+        exit()
+    print(f"PROFILING: {shlex.quote(args.script)} to {profilefile}", file=sys.stderr)
     subprocess.run(cmd)
     print(f"PROFING ENDED, output in {profilefile}", file=sys.stderr)
 
@@ -901,7 +957,18 @@ def profile(output: Optional[io.FileIO], method: str, script: str):
 @cli.command(
     help="""
 Analyze profiling information stored in PROFILEFILE.
-    """
+    """,
+    epilog="""
+\b
+Example:
+	L_bash_profile analyze profile.txt \\
+		--dumprecords profile.records.txt \\
+		--callgraph profile.callgraph.dot \\
+		--callstats profile.callstats.dot \\
+		--pstats profile.pstats \\
+		--callstatscmds \\
+		--dotlimit 3
+    """,
 )
 @click_help()
 @clickdc.adddc("args", AnalyzeArgs)
@@ -912,6 +979,7 @@ def analyze(args: AnalyzeArgs):
 @cli.command(help="print pstats data")
 @click.option("-r", "--raw", is_flag=True, help="Just print marshal file content")
 @click.argument("file", type=click.File("rb", lazy=True))
+@click_help()
 def showpstats(raw: bool, file: io.FileIO):
     if raw:
 
