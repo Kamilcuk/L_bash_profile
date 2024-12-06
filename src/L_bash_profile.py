@@ -17,7 +17,7 @@ from collections import Counter
 from dataclasses import astuple, dataclass, field
 from datetime import timedelta
 from functools import cached_property
-from typing import ClassVar, Iterable, List, Optional, TypeVar, Union, cast
+from typing import Iterable, List, Optional, TypeVar, Union, cast
 
 import click
 import clickdc
@@ -101,6 +101,15 @@ def asgroups(x: Iterable[T], n: int) -> Iterable[list[T]]:
 
 
 @dataclass
+class Integer:
+    v: int = 0
+
+    def inc(self):
+        self.v += 1
+        return self.v - 1
+
+
+@dataclass
 class RedGreenHue:
     elems: int
 
@@ -146,8 +155,6 @@ class Record:
     """$BASH_SOURCE, might be empty"""
     funcname: str
     """$BASH_FUNCNAME, might be empty"""
-    trace: list[FunctionKey] = field(default_factory=list)
-    """The call trace up to this function, from the bottom"""
     spent_us: int = -1
     """How long did the instruction take? Substraction of EPOCHREALTIME from the next instruction"""
 
@@ -170,15 +177,12 @@ class CmdStats:
     totaltime: int = 0
 
 
-CallgraphCmd = Union[Record, "CallgraphNode"]
-
-
 @dataclass
 class CallgraphNode:
     """Single node in the callgraph tree"""
 
     function: FunctionKey = field(default_factory=FunctionKey)
-    records: list[CallgraphCmd] = field(default_factory=list)
+    records: list[Union[Record, CallgraphNode]] = field(default_factory=list)
     parent: Optional[CallgraphNode] = None
 
     @property
@@ -196,6 +200,13 @@ class CallgraphNode:
     @cached_property
     def childtime(self) -> int:
         return sum(rr.totaltime for rr in self.records if isinstance(rr, CallgraphNode))
+
+    @cached_property
+    def records_cnt(self) -> int:
+        return sum(
+            rr.records_cnt if isinstance(rr, CallgraphNode) else 1
+            for rr in self.records
+        )
 
     @cached_property
     def totaltime(self) -> int:
@@ -273,39 +284,45 @@ class Pstats(Pstatsnocallers):
 class AnalyzeArgs:
     """Command line arguments"""
 
-    showanalyzetimes: Optional[bool] = clickdc.option()
+    showtimes: Optional[bool] = clickdc.option(
+        help="Show processing times in the output"
+    )
     linelimit: Optional[int] = clickdc.option(
         help="From the input file, parse only that many lines from the top. This is used to reduce the numebr of analyzed lines for testing"
     )
-    dotcallgraph: Optional[str] = clickdc.option(
-        "--dot",
+
+    callgraph: Optional[str] = clickdc.option(
         help="Output file for dot callgraph file. Use for example `xdot <file>` to view.",
     )
-    dotcallgraphlimit: int = clickdc.option(
-        "--dotlimit",
+    callstats: Optional[str] = clickdc.option(
+        help="Output file for dot callstats file. Similar to full callgraph, but with statistics of function calls.",
+    )
+    callstatscmds: Optional[bool] = clickdc.option(
+        help="Add commands to callstats graph"
+    )
+    pstats: Optional[str] = clickdc.option(
+        help="Generate python pstats file just like python cProfile file"
+    )
+    dumprecords: Optional[str] = clickdc.option(
+        help="Dump callgraph in text format to a file command by command, call by call.",
+    )
+
+    dotlimit: Optional[int] = clickdc.option(
         default=0,
         show_default=True,
         help="""
-        When generating dot callgraph, limit the number of children of each point to max this number.
-        Use this settings for big callgraphs where you do not see anything.
+        When generating dot callgraph or callstats,
+        limit the number of children of each point to max this number.
+        Use to reduce big callgraphs where you do not see anything.
         """,
     )
     filterfunction: Optional[str] = clickdc.option(
-        help="Only filter execution time of this particular function. Usefull for analysis of a single bash function execution"
-    )
-    pstats: Optional[str] = clickdc.option(
-        help="TODO: Generate python pstats file just like python cProfile file"
-    )
-    dotfunction: Optional[str] = clickdc.option(
         help="""
-            The callgraph is generated with functions matching given regex as roots.
-            Implies --filterfunction
-            """,
+            Filter processing to callgraph roots from this function.
+            Usefull for analysis of a single bash function execution
+            """
     )
-    dotcmds: Optional[bool] = clickdc.option(help="Add commands to dot graph nodes")
-    dumprecords: Optional[str] = clickdc.option(
-        help="Dump records to a file. Useful for debugging",
-    )
+
     profilefile: Optional[io.TextIOBase] = clickdc.argument(
         type=click.File(errors="replace", lazy=True), required=False
     )
@@ -403,9 +420,6 @@ class LineProcessor:
     Synchronize with profiling bash script.
     """
 
-    filterfunction_rgx: Optional[re.Pattern]
-    linergx: ClassVar[re.Pattern] = re.compile(r"^# [0-9]+ .+$")
-
     def process_line(self, data: list[tuple[int, str]]) -> list[Record]:
         # data = data if isinstance(data, list) else [data]
         ret: list[Record] = []
@@ -432,7 +446,7 @@ class LineProcessor:
                     rr = Record(
                         idx=lineno,
                         stamp_us=int(arr[1]),
-                        cmd=" ".join(arr[6:]),  # arr[6],
+                        cmd=repr(" ".join(arr[6:])),  # arr[6],
                         level=int(arr[2]) + 1,  # len(arr[0]),
                         lineno=int(arr[3]),
                         source=arr[4],
@@ -456,43 +470,33 @@ class Analyzer:
         with self.timeit(f"Reading {self.args.profilefile}"):
             self.read()
         with self.timeit("Calculating traces and time spent"):
-            self.infer_records_backtrace()
             self.calculate_records_spent_time()
         with self.timeit("Getting longest commands"):
             self.print_top_longest_commands()
         with self.timeit("Getting longest functions"):
             self.print_top_longest_functions()
         if self.args.dumprecords:
-            self.dumprecords(self.args.dumprecords)
-        if self.args.dotcallgraph:
-            with self.timeit("Generating dot callgraph"):
-                self.extract_callgraph(self.args.dotcallgraph)
+            self.dump_records(self.args.dumprecords)
+        if self.args.callgraph:
+            self.generate_dot_callgraph(self.args.callgraph)
+        if self.args.callstats:
+            self.generate_dot_callstats(self.args.callstats)
         if self.args.pstats:
             with self.timeit("Generting pstats file"):
                 self.create_python_pstats_file(self.args.pstats)
         self.print_stats()
 
     def timeit(self, name: str):
-        return Timeit(name if self.args.showanalyzetimes else "")
-
-    @cached_property
-    def execution_time_us(self):
-        return self.records[-1].stamp_us - self.records[0].stamp_us
+        return Timeit(name if self.args.showtimes else "")
 
     def print_stats(self):
         print(
-            f"Script executed in {timedelta(microseconds=self.execution_time_us)}us, {len(self.records)} instructions, {len(self.functions)} functions."
+            f"Script executed in {timedelta(microseconds=self.get_callgraph.totaltime)}us, {len(self.records)} instructions, {len(self.functions)} functions."
         )
 
     def read(self):
         # read the data
-        lp = LineProcessor(
-            filterfunction_rgx=(
-                re.compile(self.args.filterfunction)
-                if self.args.filterfunction
-                else None
-            ),
-        )
+        lp = LineProcessor()
         with self.args.profilefile or sys.stdin as f:
             with multiprocessing.Pool() as pool:
                 generator = asgroups(
@@ -526,38 +530,46 @@ class Analyzer:
                     curnode = curnode.parent
             curlevel = rr.level
             curnode.records.append(rr)
+
+        if self.args.filterfunction:
+            funcnamergx = re.compile(self.args.filterfunction)
+            callgraph2 = CallgraphNode()
+
+            def traverse_to_filter(node: CallgraphNode):
+                # print("MATCH", node.function.funcname, funcnamergx)
+                if funcnamergx.match(node.function.funcname):
+                    node.parent = callgraph2
+                    callgraph2.records.append(node)
+                else:
+                    for rr in node.records:
+                        if isinstance(rr, CallgraphNode):
+                            # print(f"MATCH @ {rr.function}")
+                            traverse_to_filter(rr)
+
+            traverse_to_filter(callgraph)
+            callgraph = callgraph2
+
         return callgraph
 
-    def dumprecords(self, file: str):
+    def dump_records(self, file: str):
         callgraph = self.get_callgraph
         prefix = " >"
 
-        def dumprecord(f, node: CallgraphNode):
+        def traverse_to_dump_records(f, node: CallgraphNode):
             for rr in node.records:
                 if isinstance(rr, Record):
-                    print(f"{prefix * rr.level} {rr.spent_us:_}us {rr.cmd}", file=f)
+                    print(f"{prefix * node.level} {rr.spent_us:_}us {rr.cmd}", file=f)
                 else:
-                    print(f"{prefix * rr.level} call {rr.function}", file=f)
-                    dumprecord(f, rr)
+                    print(f"{prefix * (node.level + 1)} call {rr.function}", file=f)
+                    traverse_to_dump_records(f, rr)
                     print(
-                        f"{prefix * rr.level} return {rr.function} total={rr.totaltime:_}us inline={rr.inlinetime:_}us child={rr.childtime:_}us",
+                        f"{prefix * (node.level + 1)} return {rr.function} total={rr.totaltime:_}us inline={rr.inlinetime:_}us child={rr.childtime:_}us",
                         file=f,
                     )
 
         with open(file, "w") as f:
-            dumprecord(f, callgraph)
+            traverse_to_dump_records(f, callgraph)
         print("Records dumped to", file)
-
-    def infer_records_backtrace(self):
-        curlevel = 1
-        trace: list[FunctionKey] = []
-        for rr in self.records:
-            if rr.level > curlevel:
-                trace.append(FunctionKey(rr.source, rr.lineno, rr.funcname))
-            elif rr.level < curlevel:
-                trace = trace[: -(curlevel - rr.level)]
-            rr.trace = list(reversed(trace))
-            curlevel = rr.level
 
     def print_top_longest_commands(self):
         callgraph = self.get_callgraph
@@ -578,9 +590,9 @@ class Analyzer:
             x = v.callers.most_common()[i]
             return f"{x[0]} {x[1]}"
 
-        longest_commands: list[dict] = [
-            dict(
-                percent=v.spent / self.execution_time_us * 100,
+        def gen_text(cmd, v):
+            return dict(
+                percent=v.spent / callgraph.totaltime * 100,
                 spent_us=f"{v.spent:_}",
                 cmd=dots_trim(cmd),
                 calls=len(v.records),
@@ -590,29 +602,39 @@ class Analyzer:
                 topCaller3=get_top_caller(v, 2),
                 example=v.get_example(),
             )
-            for cmd, v in sorted(
-                self.commands.items(),
-                key=lambda x: -x[1].spent,
-            )[:20]
+
+        longest_commands: list[dict] = [
+            gen_text(cmd, v)
+            for cmd, v in sorted(self.commands.items(), key=lambda x: -x[1].spent)[:20]
         ]
         print(f"Top {len(longest_commands)} cummulatively longest commands:")
         print(tabulate(longest_commands, headers="keys"))
         print()
+        #
+        longest_commands_per_call: list[dict] = [
+            gen_text(cmd, v)
+            for cmd, v in sorted(
+                self.commands.items(), key=lambda x: -x[1].spent / len(x[1].records)
+            )[:20]
+        ]
+        print(
+            f"Top {len(longest_commands_per_call)} cummulatively longest commands per call:"
+        )
+        print(tabulate(longest_commands_per_call, headers="keys"))
+        print()
 
     def print_top_longest_functions(self):
         callgraph = self.get_callgraph
-        self.functions: dict[str, FunctionData] = {}
+        self.functions: dict[FunctionKey, FunctionData] = {}
 
         def traverse_for_top_longest_functions(node: CallgraphNode):
             for rr in node.records:
                 if isinstance(rr, Record):
-                    self.functions.setdefault(
-                        node.function.funcname, FunctionData()
-                    ).add_record(rr)
-                else:
-                    tmp = self.functions.setdefault(
-                        rr.function.funcname, FunctionData()
+                    self.functions.setdefault(node.function, FunctionData()).add_record(
+                        rr
                     )
+                else:
+                    tmp = self.functions.setdefault(rr.function, FunctionData())
                     tmp.calls += 1
                     traverse_for_top_longest_functions(rr)
 
@@ -621,24 +643,39 @@ class Analyzer:
         if not self.functions:
             return
 
-        longest_functions: list[dict] = [
-            dict(
-                percent=v.spent / self.execution_time_us * 100,
+        def gen_func_desc(func: FunctionKey, v: FunctionData):
+            return dict(
+                percent=v.spent / callgraph.totaltime * 100,
                 spent_us=f"{v.spent:_}",
-                funcname=func,
+                funcname=func.funcname,
                 calls=v.calls,
-                spentPerCall=v.spent / v.calls,
+                spentPerCall=v.spent / v.calls if v.calls else 0,
                 instructions=len(v.records),
-                instructionsPerCall=len(v.records) / v.calls,
-                example=v.get_example(),
+                instructionsPerCall=len(v.records) / v.calls if v.calls else 0,
+                location=f"{func.filename}:{func.lineno}",
             )
-            for func, v in sorted(
-                self.functions.items(),
-                key=lambda x: -x[1].spent,
-            )[:20]
+
+        longest_functions: list[dict] = [
+            gen_func_desc(func, v)
+            for func, v in sorted(self.functions.items(), key=lambda x: -x[1].spent)[
+                :20
+            ]
         ]
         print(f"Top {len(longest_functions)} cummulatively longest functions:")
         print(tabulate(longest_functions, headers="keys"))
+        print()
+        #
+        longest_functions_per_call: list[dict] = [
+            gen_func_desc(func, v)
+            for func, v in sorted(
+                self.functions.items(),
+                key=lambda x: -x[1].spent / x[1].calls if x[1].calls else 0,
+            )[:20]
+        ]
+        print(
+            f"Top {len(longest_functions_per_call)} cummulatively longest functions per call:"
+        )
+        print(tabulate(longest_functions_per_call, headers="keys"))
         print()
 
     @cached_property
@@ -659,33 +696,44 @@ class Analyzer:
                     x.primitivecallcount += 1
             return ret
 
-        callstats = traverse_for_callstats(callgraph)
+        return traverse_for_callstats(callgraph)
 
-        if self.args.dotfunction:
-            # Filter dotfunction by merging the trees from the top node that matches the regex.
-            dotfunctionrgx = re.compile(self.args.dotfunction)
-            newcallgraph = CallstatsNode()
+    def generate_dot_callgraph(self, outputfile: str):
+        callgraph = self.get_callgraph
+        dot = Digraph()
+        index = Integer()
 
-            def walk(node: CallstatsNode):
-                if dotfunctionrgx.match(node.function.funcname):
-                    newcallgraph.childtime += node.totaltime
-                    newcallgraph.children.setdefault(
-                        node.function, CallstatsNode(node.function)
-                    ).merge(node)
+        def nextname():
+            return f"{index.inc()}"
+
+        def traverse_to_gen_callgraph(
+            parent: Digraph, nodename: str, node: CallgraphNode
+        ):
+            parent.node(nodename, f"{node.function}")
+            graph = Digraph("graph_" + nodename, graph_attr=dict(rank="same"))
+            prevname = nodename
+            for rr in node.records:
+                childname = nextname()
+                dot.edge(prevname, childname)
+                prevname = childname
+                if isinstance(rr, Record):
+                    graph.node(childname, rr.cmd, shape="box")
                 else:
-                    for c in node.children.values():
-                        walk(c)
+                    traverse_to_gen_callgraph(graph, childname, rr)
+            dot.edge(prevname, nodename)
+            dot.subgraph(graph)
 
-            walk(callstats)
-            callstats = newcallgraph
+        traverse_to_gen_callgraph(dot, nextname(), callgraph)
 
-        return callstats
+        with open(outputfile, "w") as f:
+            print(dot.source, file=f)
+        print("Callgraph written to", outputfile)
 
-    def extract_callgraph(self, outputfile: str):
+    def generate_dot_callstats(self, outputfile: str):
         callstats = self.get_callstats
         dot = Digraph()
 
-        def callgraph_printer(
+        def callstats_printer(
             parents: str, x: CallstatsNode, color: Optional[str] = None
         ):
             me = f"{parents}_{x.function.funcname}"
@@ -711,12 +759,12 @@ class Analyzer:
             children: list[Union[CallstatsNode, CmdStats]] = cast(
                 list[Union[CallstatsNode, CmdStats]], nodechildren
             )
-            if self.args.dotcmds:
+            if self.args.callstatscmds:
                 children.extend(list(x.cmdstats.values()))
             children = list(
                 maybe_take_n(
                     sorted(children, key=lambda x: -x.totaltime),
-                    self.args.dotcallgraphlimit,
+                    self.args.dotlimit,
                 )
             )
             redgreenhue = RedGreenHue(len(children))
@@ -729,7 +777,7 @@ class Analyzer:
                         f"{me}_{child.function.funcname}",
                         color=color,
                     )
-                    callgraph_printer(me, child, color)
+                    callstats_printer(me, child, color)
                 else:
                     childname = f"{me}_{md5sum(child.cmd)}"
                     dot.edge(me, childname, color=color)
@@ -746,9 +794,10 @@ class Analyzer:
                         shape="box",
                     )
 
-        callgraph_printer("", callstats)
+        callstats_printer("", callstats)
         with open(outputfile, "w") as f:
             print(dot.source, file=f)
+        print("Callstats written to", outputfile)
 
     def create_python_pstats_file(self, file: str):
         """
@@ -802,7 +851,6 @@ class Analyzer:
         with open(file, "wb") as f:
             marshal.dump(pstats, f)
         print(f"pstats file written to {file}")
-        print()
 
 
 ###############################################################################
