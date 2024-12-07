@@ -323,8 +323,10 @@ class AnalyzeArgs:
             """
     )
 
-    profilefile: Optional[io.TextIOBase] = clickdc.argument(
-        type=click.File(errors="replace", lazy=True), required=False
+    profilefile: io.TextIOBase = clickdc.argument(
+        type=click.File(errors="replace", lazy=True),
+        required=False,
+        default=io.TextIOWrapper(sys.stdin.buffer, errors="ignore"),
     )
 
 
@@ -388,16 +390,18 @@ PROFILEMETHODS: dict[str, str] = {
 export BASH_XTRACEFD PS4='+ ${EPOCHREALTIME//[.,]} ${#BASH_SOURCE[@]} ${LINENO:-0} ${BASH_SOURCE[0]:-<} ${FUNCNAME[0]:->} '
 exec {BASH_XTRACEFD}>"$1"
 shift
+%BEFORE%
 set -x
-@@
+%SCRIPT%
 : END
 """,
     "DEBUG": r"""
 set -T
 exec {_L_bash_profile_fd}>"$1"
 shift
+%BEFORE%
 trap 'printf "# %s %s %s %q %q %q\n" "${EPOCHREALTIME//[.,]}" "${#BASH_SOURCE[@]}" "${LINENO:-0}" "${BASH_SOURCE[0]:-<}" "${FUNCNAME[0]:->}" "$BASH_COMMAND" >&"$_L_bash_profile_fd"' DEBUG
-@@
+%SCRIPT%
 : END
 """,
     "VAR": r"""
@@ -405,8 +409,9 @@ set -T
 readonly _L_bash_profile_file=$1
 shift
 declare -a _L_bash_profile_var='()'
+%BEFORE%
 trap 'printf -v "_L_bash_profile_var[${#_L_bash_profile_var[@]}]" "# %s %s %s %q %q %q"   "${EPOCHREALTIME//[.,]}" "${#BASH_SOURCE[@]}" "${LINENO:-0}" "${BASH_SOURCE[0]:-<}" "${FUNCNAME[0]:->}" "$BASH_COMMAND"' DEBUG
-@@
+%SCRIPT%
 printf "%s\n" "${_L_bash_profile_var[@]}" >"$_L_bash_profile_file"
 """,
 }
@@ -504,7 +509,7 @@ class Analyzer:
     def read(self):
         # read the data
         lp = LineProcessor()
-        with self.args.profilefile or sys.stdin as f:
+        with self.args.profilefile as f:
             with multiprocessing.Pool() as pool:
                 generator = asgroups(
                     maybe_take_n(enumerate(f), self.args.linelimit), 100
@@ -943,8 +948,8 @@ def profile(args: ProfileArgs):
         if not args.output or args.output == sys.stdout
         else args.output.name
     )
-    script = "\n".join([args.before] + [args.script] * args.repeat)
-    script = PROFILEMETHODS[args.method].replace("@@", script)
+    script = "\n".join([args.script] * args.repeat)
+    script = PROFILEMETHODS[args.method].replace("%BEFORE%", args.before).replace("%SCRIPT%", script)
     cmd = ["bash", "-c", script, "bash", profilefile, *args.args]
     if args.dryrun:
         print(" ".join(shlex.quote(x) for x in cmd))
