@@ -419,8 +419,8 @@ printf "%s\n" "${_L_bash_profile_var[@]}" >"$_L_bash_profile_file"
 }
 PROFILEMETHODS.update(
     {
-        "1": PROFILEMETHODS["XTRACE"],
-        "2": PROFILEMETHODS["DEBUG"],
+        "1": PROFILEMETHODS["DEBUG"],
+        "2": PROFILEMETHODS["XTRACE"],
         "3": PROFILEMETHODS["VAR"],
     }
 )
@@ -899,15 +899,15 @@ class ProfileArgs:
     )
     method: str = clickdc.option(
         "-m",
-        default="XTRACE",
+        default="1",
         type=click.Choice(list(PROFILEMETHODS.keys()), case_sensitive=False),
         help="""
         Chooses the method to profile the script.
-        1 or XTRACE uses set -x with BASH_XTRACEFD and FD4 to output the commands.
-        2 or DEBUG uses trap DEBUG to output executed commands to a file.
+        1 or DEBUG uses trap DEBUG to output executed commands to a file.
+        2 or XTRACE uses set -x with BASH_XTRACEFD and FD4 to output the commands.
         3 or VAR uses trap DEBUG to append commands to an array and then write it to a file on the end of execution.
-        XTRACE is the fastest.
         DEBUG is the most reliable.
+        XTRACE is the fastest, but set -x prints after expansions have been done to the command.
         VAR does not handle subshells.
         """,
     )
