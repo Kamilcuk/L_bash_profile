@@ -214,6 +214,11 @@ class CallgraphNode:
     def totaltime(self) -> int:
         return self.inlinetime + self.childtime
 
+    def strtree(self) -> str:
+        return (
+            self.parent.strtree() + "->" if self.parent else ""
+        ) + f"{self.function}"
+
 
 @dataclass
 class CallstatsNode:
@@ -438,11 +443,13 @@ class LineProcessor:
         # data = data if isinstance(data, list) else [data]
         ret: list[Record] = []
         for lineno, line in data:
+            line = line.rstrip("\n")
             try:
                 if line.startswith("# "):
                     # Fix shlex.split not able to parse $'\''
-                    line = line.replace(r"\'", "")
-                    arr = shlex.split(line)
+                    # line = line.replace(r"\'", "")
+                    # arr = shlex.split(line)
+                    arr = line.split(" ", 8)
                     rr = Record(
                         idx=lineno,
                         stamp_us=int(arr[1]),
@@ -456,8 +463,9 @@ class LineProcessor:
                     ret.append(rr)
                 elif line.startswith("+"):
                     # Fix shlex.split not able to parse $'\''
-                    line = line.replace(r"\'", "")
-                    arr = shlex.split(line)
+                    # line = line.replace(r"\'", "")
+                    # arr = shlex.split(line)
+                    arr = line.split(" ", 8)
                     rr = Record(
                         idx=lineno,
                         stamp_us=int(arr[1]),
@@ -535,15 +543,29 @@ class Analyzer:
         callgraph = CallgraphNode()
         curnode = callgraph
         curlevel = 1
+        pid = -1
         for rr in self.records:
+            # Filter only one pid
+            if pid == -1:
+                pid = rr.pid
+            if rr.pid != pid:
+                continue
+            #
             if rr.level > curlevel:
+                assert rr.level - curlevel == 1, (
+                    f"curlevel={curlevel} rr.level={rr.level} rr={rr} isCallgraph={curnode == callgraph} curnode={curnode.strtree()}"
+                )
+
                 newnode = CallgraphNode(rr.function(), parent=curnode)
                 curnode.records.append(newnode)
                 curnode = newnode
             elif rr.level < curlevel:
                 for i in range(curlevel - rr.level):
-                    assert curnode.parent
-                    curnode = curnode.parent
+                    assert curnode.parent, (
+                        f"curlevel={curlevel} rr.level={rr.level} i={i} rr={rr} isCallgraph={curnode == callgraph} curnode={curnode.strtree()}"
+                    )
+                    if curnode.parent:
+                        curnode = curnode.parent
             curlevel = rr.level
             curnode.records.append(rr)
 
@@ -953,7 +975,11 @@ def profile(args: ProfileArgs):
         else args.output.name
     )
     script = "\n".join([args.script] * args.repeat)
-    script = PROFILEMETHODS[args.method].replace("%BEFORE%", args.before).replace("%SCRIPT%", script)
+    script = (
+        PROFILEMETHODS[args.method]
+        .replace("%BEFORE%", args.before)
+        .replace("%SCRIPT%", script)
+    )
     cmd = ["bash", "-c", script, "bash", profilefile, *args.args]
     if args.dryrun:
         print(" ".join(shlex.quote(x) for x in cmd))

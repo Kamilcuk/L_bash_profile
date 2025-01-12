@@ -15,7 +15,7 @@ clean:
 
 MODE ?= XTRACE
 L_lib:
-	L_bash_profile profile -o profile.$(MODE).txt 'export L_UNITTEST_UNSET_X=0; . ../L_lib/bin/L_lib.sh test' -m $(MODE)
+	L_bash_profile profile -o profile.$(MODE).txt 'export L_UNITTEST_UNSET_X=0; . ../L_lib/bin/L_lib.sh test $(ARGS)' -m $(MODE)
 analyze:
 	L_bash_profile analyze profile.$(MODE).txt \
 		--dumprecords profile.$(MODE).records.txt \
@@ -23,13 +23,11 @@ analyze:
 		--callstats profile.$(MODE).callstats.dot \
 		--pstats profile.$(MODE).pstats $(ARGS)
 xdot: analyze
-	xdot profile.$(MODE).dot
-xdot_L_argparse: ARGS = --filterfunction L_argparse --callstatscmds --dotlimit 6
-xdot_L_argparse: analyze
-	xdot profile.$(MODE).dot
-xdot_L_asa_has: ARGS = --dotcmds --dotfunction L_asa_has
-xdot_L_asa_has: analyze
-	xdot profile.$(MODE).dot
+	xdot profile.$(MODE).callstats.dot
+xdot_L_argparse: ARGS += --filterfunction L_argparse --dotlimit 6
+xdot_L_argparse: analyze xdot
+xdot_L_asa_has: ARGS += --filterfunction L_asa_has
+xdot_L_asa_has: analyze xdot
 snakeviz: analyze
 	snakeviz profile.$(MODE).pstats
 
