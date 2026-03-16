@@ -14,7 +14,10 @@ clean:
 	rm -vf profile*
 
 MODE ?= XTRACE
-L_lib:
+profile_L_lib_argparse_uv: ARGS = -n NO --cache-dir CACHE_DIR add --color --no-build-package
+profile_L_lib_argparse_uv:
+	L_bash_profile profile -o profile.$(MODE).txt 'export L_UNITTEST_UNSET_X=0; . ../L_lib/tests/argparse_uv.sh $(ARGS)' -m $(MODE)
+profile_L_lib:
 	L_bash_profile profile -o profile.$(MODE).txt 'export L_UNITTEST_UNSET_X=0; . ../L_lib/bin/L_lib.sh test $(ARGS)' -m $(MODE)
 analyze:
 	L_bash_profile analyze profile.$(MODE).txt \
