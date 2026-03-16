@@ -299,16 +299,16 @@ class AnalyzeArgs:
     )
 
     callgraph: Optional[str] = clickdc.option(
-        help="Output file for dot callgraph file. Use for example `xdot <file>` to view.",
+        help="Generate a DOT callgraph. Use a viewer like `xdot` to visualize the flow.",
     )
     callstats: Optional[str] = clickdc.option(
-        help="Output file for dot callstats file. Similar to full callgraph, but with statistics of function calls.",
+        help="Generate a DOT callgraph with function call statistics.",
     )
     callstatscmds: Optional[bool] = clickdc.option(
-        help="Add commands to callstats graph"
+        help="Include individual commands in the callstats graph."
     )
     pstats: Optional[str] = clickdc.option(
-        help="Generate python pstats file just like python cProfile file"
+        help="Generate a Python pstats file, compatible with the `cProfile` module for deep analysis."
     )
     dumprecords: Optional[str] = clickdc.option(
         help="Dump callgraph in text format to a file command by command, call by call.",
@@ -898,9 +898,7 @@ class Analyzer:
 
 
 @click.group(
-    help="""
-Profile execution of bash scripts.
-""",
+    help="""A powerful and easy-to-use command-line tool for profiling Bash scripts.""",
     epilog="""
 Written by Kamil Cukrowski 2024. Licensed under GPLv3.
     """,
@@ -951,19 +949,22 @@ class ProfileArgs:
 
 @cli.command(
     help="""
-Generate profiling information of a given Bash script to PROFILEFILE.
+Profiles a Bash script and generates a file with the execution trace.
 
 The script has to run commands in the current execution environment.
-Use `source ./script.sh` to run a script.
-
-Further arguments to the script are passed as ARGS.
+Use `source ./script.sh` to run a script from a file.
 """,
     epilog="""
 \b
-Example:
-    L_bash_profile profile -n10 'echo hello world' | L_bash_profile analyze
-    L_bash_profile profile -n200 -b i=0 '((i)); [[ $i ]]; [[ "$i" ]]; [ "$i" ]; [ $i ]' | L_bash_profile analyze
-    L_bash_profile profile -n500 -b 'f() { "$@"; }; g() { "$@"; }; i=1' 'f eval "(($i))"; g test "$i" = 0;' | L_bash_profile analyze
+Examples:
+  # Profile a simple command and analyze the output
+  L_bash_profile profile -n10 'echo "hello world"' | L_bash_profile analyze
+
+  # Profile a more complex script with a variable
+  L_bash_profile profile -n200 -b i=0 '((i)); [[ $i ]];' | L_bash_profile analyze
+
+  # Profile a script with functions
+  L_bash_profile profile -n500 -b 'f() { "$@"; }; g() { "$@"; }; i=1' 'f eval "(($i))"; g test "$i" = 0;' | L_bash_profile analyze
 """,
 )
 @click_help()
@@ -991,19 +992,24 @@ def profile(args: ProfileArgs):
 
 @cli.command(
     help="""
-Analyze profiling information stored in PROFILEFILE.
-    """,
+Analyzes a profile file and generates human-readable reports.
+""",
     epilog="""
 \b
 Example:
-	L_bash_profile analyze profile.txt \\
-		--dumprecords profile.records.txt \\
-		--callgraph profile.callgraph.dot \\
-		--callstats profile.callstats.dot \\
-		--pstats profile.pstats \\
-		--callstatscmds \\
-		--dotlimit 3
-    """,
+  # Analyze a profile file and generate multiple reports
+  L_bash_profile analyze profile.txt \\
+    --dumprecords profile.records.txt \\
+    --callgraph profile.callgraph.dot \\
+    --callstats profile.callstats.dot \\
+    --pstats profile.pstats \\
+    --callstatscmds \\
+    --dotlimit 3
+
+  # Real-world example: Profiling L_lib.sh
+  L_bash_profile profile -o profile.txt 'export L_UNITTEST_UNSET_X=0; . ../L_lib/bin/L_lib.sh test' -m XTRACE
+  L_bash_profile analyze profile.txt --filterfunction L_argparse --dotlimit 6
+""",
 )
 @click_help()
 @clickdc.adddc("args", AnalyzeArgs)

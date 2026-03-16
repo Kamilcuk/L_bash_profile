@@ -1,189 +1,147 @@
-# L_bash_profile
+# L_bash_profile: Bash Script Profiler
 
-L_bash_profile provides deterministic profiling of Bash programs. A _profile_ is contains the whole trace of execution of a particular bash script with timestamp of each executed command. Such _profile_ can be formatted into reports to find code hot-spots.
+`L_bash_profile` is a powerful and easy-to-use command-line tool for profiling Bash scripts. It helps you identify performance bottlenecks and understand the execution flow of your scripts, making it an essential tool for both beginner and experienced Bash developers.
 
-<!-- vim-markdown-toc GFM -->
+## Key Features
 
-* [Example](#example)
-* [Features](#features)
-* [Installation](#installation)
-* [Subcommands](#subcommands)
-  * [profile](#profile)
-  * [analyze](#analyze)
-* [Example output](#example-output)
-  * [Example2](#example2)
-* [LICENSE](#license)
+- **Deterministic Profiling:** Get a complete and accurate trace of your script's execution.
+- **Performance Analysis:** Identify hotspots in your code by analyzing the collected profile data.
+- **Multiple Report Formats:**
+    - **Top Longest Commands:** See a list of the most time-consuming commands.
+    - **Top Longest Functions:** Identify the slowest functions.
+    - **Call Graphs:** Visualize the execution flow with `dot` call graphs.
+    - **Python-like Profiling:** Generate `pstats` files compatible with Python's profiling ecosystem (e.g., `snakeviz`).
+- **Easy to Use:** Simple and intuitive command-line interface.
 
-<!-- vim-markdown-toc -->
+## Installation
 
-# Example
+You can install `L_bash_profile` using `uv`:
 
+```bash
+uv tool install L_bash_profile
 ```
+
+Or run it directly without installing:
+
+```bash
+uvx L_bash_profile --help
+```
+
+## Basic Example
+
+```bash
 $ L_bash_profile profile -o ./profile.txt 'i=0; while ((i < 100)); do ((i++)); done'
 PROFILING: i=0; while ((i < 100)); do ((i++)); done to ./profile.txt
 PROFING ENDED, output in /dev/stdout
+
 $ L_bash_profile analyze ./profile.txt
 Top 3 cummulatively longest commands:
-  percent    spent_us  cmd            calls    spentPerCall    topCaller1  topCaller2    topCaller3    example
----------  ----------  -----------  -------  --------------  ------------  ------------  ------------  ---------
-50.1513         3_148  ((i < 100))      101         31.1683           101                              ~:13
-49.4504         3_104  ((i++))          100         31.04             100                              ~:13
- 0.955871          60  i=0                1         60                  1                              ~:13
+  percent    spent_us  cmd                   calls    spentPerCall  topCaller1    topCaller2    topCaller3    example
+---------  ----------  ------------------  -------  --------------  ------------  ------------  ------------  ---------
+ 49.5498        1_596  \(\(i\ \<\ 100\)\)      101          15.802  \> 101                                    \<:7
+ 48.9289        1_576  \(\(i++\)\)             100          15.76   \> 100                                    \<:7
+  1.52127          49  i=0                       1          49      \> 1                                      \<:7
 
-Script executed in 0:00:00.006277us, 202 instructions, 0 functions.
+Top 3 cummulatively longest commands per call:
+  percent    spent_us  cmd                   calls    spentPerCall  topCaller1    topCaller2    topCaller3    example
+---------  ----------  ------------------  -------  --------------  ------------  ------------  ------------  ---------
+  1.52127          49  i=0                       1          49      \> 1                                      \<:7
+ 49.5498        1_596  \(\(i\ \<\ 100\)\)      101          15.802  \> 101                                    \<:7
+ 48.9289        1_576  \(\(i++\)\)             100          15.76   \> 100                                    \<:7
+
+No functions found
+Script executed in 0:00:00.003221us, 202 instructions, 0 functions.
 ```
 
-# Features
+## Subcommands
 
-- generate dot callgraph
-- print longest commands
-- print longest functions
-- generate python profile file
+### `profile`
+Executes a Bash script and generates a profile file containing the execution trace. It supports different methods (`DEBUG` trap, `XTRACE`, or variable-based) to capture timestamps.
 
-# Installation
+### `analyze`
+Analyzes a profile file and generates human-readable reports. It can also output visualization files:
+- `--callgraph`: Full execution trace in DOT format.
+- `--callstats`: Statistics-based callgraph in DOT format.
+- `--pstats`: Python pstats file for use with tools like `snakeviz`.
 
+---
+
+## Real-World Example: Profiling `L_lib.sh`
+
+This example demonstrates profiling complex argument parsing logic within the `L_lib.sh` library.
+
+```bash
+$ L_bash_profile profile -o profile.txt 'export L_UNITTEST_UNSET_X=0; . ../L_lib/tests/argparse_uv.sh -n NO --cache-dir CACHE_DIR add --color --no-build-package' -m XTRACE
+PROFILING: 'export L_UNITTEST_UNSET_X=0; . ../L_lib/tests/argparse_uv.sh -n NO --cache-dir CACHE_DIR add --color --no-build-package' to profile.txt
+PROFING ENDED, output in profile.txt
+
+$ L_bash_profile analyze profile.txt --filterfunction L_argparse --dotlimit 6
+Top 20 cummulatively longest commands:
+  percent    spent_us  cmd                                                   calls    spentPerCall  topCaller1                            topCaller2                                    topCaller3                              example
+---------  ----------  --------------------------------------------------  -------  --------------  ------------------------------------  --------------------------------------------  --------------------------------------  -------------------------------------------------------
+  9.19311      38_574  'case "${_L_args[_L_argsi]}" in'                       3195        12.0732   _L_argparse_spec_call_parameter 3132  _L_argparse_spec_parse_args 57                _L_argparse_parse_args_parse_options 5  ../bin/L_lib.sh:8325
+  5.1988       21_814  '(( ++_L_argsi < 3140 ))'                              3057         7.13575  _L_argparse_spec_call_parameter 3056  _L_argparse_spec_call_subparser 1                                                     ../bin/L_lib.sh:7141
+  4.13206      17_338  '(( 1 ))'                                              2418         7.17039  _L_argparse_spec_call_parameter 2399  _L_argparse_spec_parse_args 19                                                        ../bin/L_lib.sh:8324
+  3.94545      16_555  '_L_argparse_spec_call_parameter'                       752        22.0146   _L_argparse_spec_parse_args 733       _L_argparse_spec_call 19                                                              ../bin/L_lib.sh:8295
+  3.53363      14_827  '_L_argparse_spec_argument_common'                      753        19.6906   _L_argparse_spec_call_parameter 752   _L_argparse_spec_common_subparser_function 1                                          ../bin/L_lib.sh:7254
+  3.45832      14_511  "[[ -n '' ]]"                                          1599         9.07505  _L_argparse_spec_call_parameter 1131  L_var_is_set 427                              _L_argparse_spec_parse_args 38          ../bin/L_lib.sh:1882
+  2.65541      11_142  '_L_argparse_spec_call_parameter_common_option_a..      889        12.5332   _L_argparse_spec_call_parameter 889                                                                                         ../bin/L_lib.sh:7171
+  2.14873       9_016  'local first_long_option= first_short_option= pc..      752        11.9894   _L_argparse_spec_call_parameter 752                                                                                         ../bin/L_lib.sh:7139
+  1.98714       8_338  'case "${_L_args[++_L_argsi]}" in'                      734        11.3597   _L_argparse_spec_parse_args 734                                                                                             ../bin/L_lib.sh:8406
+  1.97118       8_271  'case "${_L_opt_action[_L_opti]:=store}" in'            753        10.9841   _L_argparse_spec_argument_common 753                                                                                        ../bin/L_lib.sh:7276
+  1.87823       7_881  "[[ '' == remainder ]]"                                 750        10.508    _L_argparse_spec_argument_common 750                                                                                        ../bin/L_lib.sh:7260
+  1.8451        7_742  "L_var_is_set '_L_opt_dest[_L_opti]'"                   745        10.3919   _L_argparse_spec_call_parameter 745                                                                                         ../bin/L_lib.sh:7189
+  1.77956       7_467  '((  3140 - _L_argsi >= 2 ))'                           753         9.91633  _L_argparse_spec_parse_args 753                                                                                             ../bin/L_lib.sh:8404
+  1.67423       7_025  'break'                                                 755         9.30464  _L_argparse_spec_call_parameter 733   _L_argparse_spec_parse_args 19                _L_argparse_spec_call_subparser 1       ../bin/L_lib.sh:8327
+  1.58605       6_655  'case "${_L_opt_nargs[_L_opti]:=0}" in'                 753         8.83798  _L_argparse_spec_argument_common 753                                                                                        ../bin/L_lib.sh:7327
+  1.5634        6_560  'local _L_type='                                        752         8.7234   _L_argparse_spec_call_parameter 752                                                                                         ../bin/L_lib.sh:7206
+  1.52408       6_395  '_L_opt__class[_L_opti]=option'                         745         8.58389  _L_argparse_spec_call_parameter 745                                                                                         ../bin/L_lib.sh:7187
+  1.50096       6_298  '(( --_L_argsi ))'                                      753         8.36388  _L_argparse_spec_call_parameter 752   _L_argparse_spec_call_subparser 1                                                     ../bin/L_lib.sh:7141
+  1.37823       5_783  '(( 0 ))'                                               755         7.6596   _L_argparse_spec_call_parameter 751   _L_argparse_optspec_validate_values 2         _L_argparse_parse_args_long_option 2    ../bin/L_lib.sh:7243
+  1.34105       5_627  '(( ++_L_opti ))'                                       753         7.47278  _L_argparse_spec_parse_args 753                                                                                             ../bin/L_lib.sh:8397
+
+Top 20 cummulatively longest functions:
+  percent    spent_us  funcname                                                calls    spentPerCall    instructions    instructionsPerCall  location
+---------  ----------  ----------------------------------------------------  -------  --------------  --------------  ---------------------  -------------------------------------------------------
+51.682        216_856  _L_argparse_spec_call_parameter                           752       288.372             22857               30.3949   ../bin/L_lib.sh:7139
+14.4767        60_744  _L_argparse_spec_argument_common                          753        80.6693             4885                6.48738  ../bin/L_lib.sh:7260
+11.4705        48_130  _L_argparse_spec_parse_args                                19      2533.16               4238              223.053    ../bin/L_lib.sh:8323
+ 9.46885       39_731  _L_argparse_spec_call_parameter_common_option_assign      889        44.6918             2667                3        ../bin/L_lib.sh:7124
+ 5.33345       22_379  L_is_valid_variable_name                                  752        29.7593              752                1        ../bin/L_lib.sh:2532
+ 2.02861        8_512  L_argparse                                                  1      8512                    49               49        ../bin/L_lib.sh:8506
+ 1.86417        7_822  L_var_is_set                                              833         9.39016             833                1        ../bin/L_lib.sh:1882
+ 0.666592       2_797  _L_argparse_parse_args_set_defaults                         2      1398.5                 334              167        ../bin/L_lib.sh:7974
+ 0.465685       1_954  _L_argparse_parse_args                                      2       977                   234              117        ../bin/L_lib.sh:8153
+ 0.316494       1_328  _L_argparse_spec_call_subparser                             1      1328                   136              136        ../bin/L_lib.sh:6874
+ 0.284082       1_192  _L_argparse_parser_get_long_option                          3       397.333                 6                2        ../bin/L_lib.sh:7373
+ 0.244282       1_025  L_is_true                                                 103         9.95146             103                1        ../bin/L_lib.sh:2484
+ 0.232366         975  _L_argparse_parse_args_long_option                          3       325                    39               13        ../bin/L_lib.sh:8005
+ 0.230698         968  _L_argparse_parse_args_short_option                         1       968                    19               19        ../bin/L_lib.sh:8074
+ 0.219735         922  _L_argparse_spec_call                                      19        48.5263               57                3        ../bin/L_lib.sh:8294
+ 0.217828         914  _L_argparse_optspec_dest_store                             46        19.8696               92                2        ../bin/L_lib.sh:7435
+ 0.160154         672  _L_argparse_spec_subparser_inherit_from_parent             18        37.3333               54                3        ../bin/L_lib.sh:8307
+ 0.157055         659  _L_argparse_sub_subparser_choices_indexes                   1       659                    76               76        ../bin/L_lib.sh:6956
+ 0.153481         644  L_array_append                                             36        17.8889               72                2        ../bin/L_lib.sh:3412
+ 0.13513          567  _L_argparse_optspec_dest_arr_clear                          1       567                     3                3        ../bin/L_lib.sh:7423
+
+Script executed in 0:00:00.419597us, 37891 instructions, 28 functions.
 ```
-pipx install L_bash_profile
+
+## Visualizing Call Graphs
+
+To visualize the execution flow with `xdot`:
+
+```bash
+L_bash_profile analyze profile.txt --callstats profile.dot
+xdot profile.dot
 ```
-
-# Subcommands
-
-## profile
-
-Executes a given script under profiling.
-
-Profiling just executes a `bash -c` script that spcifies `DEBUG` trap that executes a command that prints timestamp, current command, and context to the given file. After setup, the script executes the commands given on command line.
-
-To profile a script, you have to execute it in current shell context `source ./yourscript args`.
-
-## analyze
-
-Analyses the prifiling information, printing commands and function hotspots.
-
-Additionally it can generate a dot graph from the calls, for example:
-
-```
-$ L_bash_profile profile 'f() { sleep 0.1; }; g() { sleep 0.1; f; f; }; b() { f; g; }; b' | L_bash_profile analyze --dot profile.dot
-PROFILING: f() { sleep 0.1; }; g() { sleep 0.1; f; f; }; b() { f; g; }; b to /dev/stdout
-PROFING ENDED, output in /dev/stdout
-Top 4 cummulatively longest commands:
-    percent    spent_us  cmd          calls    spentPerCall  topCaller1    topCaller2    topCaller3    example
------------  ----------  ---------  -------  --------------  ------------  ------------  ------------  --------------
-133.307         405_612  sleep 0.1        4     101403       f 3           g 1                         environment:13
-  0.132777          404  f                6         67.3333  f 3           g 2           b 1           environment:13
-  0.0374667         114  g                2         57       b 1           g 1                         environment:13
-  0.0348375         106  b                2         53       1             b 1                         ~:13
-
-Top 3 cummulatively longest functions:
-    percent    spent_us  funcname      calls    spentPerCall    instructions    instructionsPerCall  example
------------  ----------  ----------  -------  --------------  --------------  ---------------------  --------------
-100.093         304_552  f                 3          101517               6                      2  environment:13
- 33.3493        101_472  g                 1          101472               4                      4  environment:13
-  0.0492983         150  b                 1             150               3                      3  environment:13
-
-Script executed in 0:00:00.304270us, 14 instructions, 3 functions.
-```
-
-Generates a `profile.dot` file that can be viewed:
 
 ![exampledot](./doc/exampledot.png)
 
-# Example output
+## Contributing
 
-```
-Top 20 cummulatively longest commands:
-  percent    spent_us  cmd                                                   calls    spentPerCall  topCaller1                          topCaller2                               topCaller3                 example
----------  ----------  --------------------------------------------------  -------  --------------  ----------------------------------  ---------------------------------------  -------------------------  --------------------------
- 5.47741      115_763  "${@:2}"                                               1794         64.5279  L_assert2 1025                      L_is_valid_variable_name 293             L_regex_match 293          ../L_lib/bin/L_lib.sh:406
- 4.45483       94_151  declare -p _L_optspec                                   174        541.098   _L_argparse_split 159               _L_argparse_parse_args_short_option 15                              ../L_lib/bin/L_lib.sh:2819
- 3.70534       78_311  (($#))                                                 1292         60.6122  _L_abbreviation_v 368               L_args_contain 356                       _L_argparse_split 292      ../L_lib/bin/L_lib.sh:3772
- 3.23247       68_317  shift                                                  1180         57.8958  _L_abbreviation_v 368               L_args_contain 356                       _L_argparse_split 200      ../L_lib/bin/L_lib.sh:662
- 2.54289       53_743  L_assert2 "$(declare -p _L_optspec)" L_var_is_se..      134        401.067   _L_argparse_split 67                L_assert2 67                                                        ../L_lib/bin/L_lib.sh:2728
- 1.75324       37_054  L_assert2  L_regex_match "${!3}" "^[^=]*=[(].*[)..      586         63.2321  L_nestedasa_get 293                 L_assert2 293                                                       ../L_lib/bin/L_lib.sh:1828
- 1.62293       34_300  L_assert2  L_is_valid_variable_name "$1"                586         58.5324  L_nestedasa_get 293                 L_assert2 293                                                       ../L_lib/bin/L_lib.sh:1827
- 1.59913       33_797  [[ "$1" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]                  311        108.672   L_is_valid_variable_name 311                                                                            ../L_lib/bin/L_lib.sh:583
- 1.43783       30_388  [[ "$1" =~ $2 ]]                                        293        103.713   L_regex_match 293                                                                                       ../L_lib/bin/L_lib.sh:311
- 1.33175       28_146  _L_optspec_declare_p=$(declare -p _L_optspec)            44        639.682   _L_argparse_split 44                                                                                    ../L_lib/bin/L_lib.sh:2826
- 1.23456       26_092  declare -n _L_asa="$1"                                  435         59.9816  L_asa_has 375                       L_asa_is_empty 50                        _L_asa_get_v 5             ../L_lib/bin/L_lib.sh:1734
- 1.15995       24_515  _L_argparse_parser_next_option _L_i _L_optspec          428         57.278   _L_argparse_parser_next_option 214  _L_argparse_parse_args_set_defaults 108  _L_argparse_parse_args 77  ../L_lib/bin/L_lib.sh:3104
- 1.14149       24_125  L_asa_has _L_parser "option$_L_i"                       428         56.3668  _L_argparse_parser_next_option 214  L_asa_has 214                                                       ../L_lib/bin/L_lib.sh:2909
- 1.1379        24_049  [[ -n "${_L_asa["$2"]+yes}" ]]                          375         64.1307  L_asa_has 375                                                                                           ../L_lib/bin/L_lib.sh:1735
- 1.13501       23_988  eval "$1=${!3#*=}"                                      293         81.8703  L_nestedasa_get 293                                                                                     ../L_lib/bin/L_lib.sh:1829
- 1.11774       23_623  [[ $1 != _L_asa ]]                                      435         54.3057  L_asa_has 375                       L_asa_is_empty 50                        _L_asa_get_v 5             ../L_lib/bin/L_lib.sh:1734
- 1.03428       21_859  [[ "$1" = "$needle" ]]                                  343         63.7289  L_args_contain 343                                                                                      ../L_lib/bin/L_lib.sh:664
- 0.950999      20_099  jq -r .v                                                  6       3349.83    t 6                                                                                                     ../L_lib/bin/L_lib.sh:949
- 0.924124      19_531  _L_handle_v "$@"                                        310         63.0032  _L_handle_v 155                     L_abbreviation 74                        L_max 18                   ../L_lib/bin/L_lib.sh:556
- 0.910781      19_249  _"${FUNCNAME[1]}"_v "${@:3}"                            288         66.8368  _L_handle_v 144                     _L_abbreviation_v 74                     _L_max_v 18                ../L_lib/bin/L_lib.sh:341
+Contributions are welcome! If you find a bug or have a feature request, please open an issue on the [GitHub repository](https://github.com/kamilcuk/L_bash_profile/issues).
 
-Top 20 cummulatively longest functions:
-  percent    spent_us  funcname                               calls    spentPerCall    instructions    instructionsPerCall  example
----------  ----------  -----------------------------------  -------  --------------  --------------  ---------------------  --------------------------
- 21.1877      447_794  _L_argparse_split                         92        4867.33             4071               44.25     ../L_lib/bin/L_lib.sh:2685
-  6.31623     133_491  L_assert2                               1025         130.235            2050                2        ../L_lib/bin/L_lib.sh:406
-  5.26407     111_254  _L_unittest_internal                     175         635.737            1762               10.0686   ../L_lib/bin/L_lib.sh:1910
-  4.99153     105_494  L_nestedasa_get                          293         360.048            1465                5        ../L_lib/bin/L_lib.sh:1827
-  4.17789      88_298  L_args_contain                           117         754.684            1406               12.0171   ../L_lib/bin/L_lib.sh:662
-  4.11675      87_006  L_asa_has                                375         232.016            1500                4        ../L_lib/bin/L_lib.sh:1734
-  3.86934      81_777  _L_abbreviation_v                         74        1105.09             1379               18.6351   ../L_lib/bin/L_lib.sh:835
-  3.73776      78_996  _L_argparse_parse_args                    27        2925.78             1326               49.1111   ../L_lib/bin/L_lib.sh:3324
-  2.82215      59_645  L_argparse                                24        2485.21              880               36.6667   ../L_lib/bin/L_lib.sh:3354
-  2.808        59_346  _L_handle_v                              154         385.364             929                6.03247  ../L_lib/bin/L_lib.sh:335
-  2.39025      50_517  L_is_valid_variable_name                 311         162.434             622                2        ../L_lib/bin/L_lib.sh:583
-  2.34809      49_626  _L_argparse_parser_next_option           214         231.897             856                4        ../L_lib/bin/L_lib.sh:2907
-  2.26155      47_797  L_argparse_print_help                     12        3983.08              836               69.6667   ../L_lib/bin/L_lib.sh:2563
-  2.1893       46_270  L_regex_match                            293         157.918             586                2        ../L_lib/bin/L_lib.sh:310
-  1.62719      34_390  _L_argparse_parser_next_argument         123         279.593             588                4.78049  ../L_lib/bin/L_lib.sh:2920
-  1.52002      32_125  L_var_is_set                             163         197.086             489                3        ../L_lib/bin/L_lib.sh:508
-  1.41668      29_941  _L_argparse_parse_args_short_option       10        2994.1               260               26        ../L_lib/bin/L_lib.sh:3167
-  1.30435      27_567  t                                          5        5513.4                41                8.2      ../L_lib/bin/L_lib.sh:946
-  1.23073      26_011  _L_argparse_parse_args_set_defaults       27         963.37              389               14.4074   ../L_lib/bin/L_lib.sh:3104
-  1.13184      23_921  _L_list_functions_with_prefix_v            1       23921                 455              455        ../L_lib/bin/L_lib.sh:560
+## License
 
-Script executed in 0:00:02.113461us, 28867 instructions, 123 functions.
-```
-
-## Example2
-
-```
-$ L_bash_profile profile -n500 -b 'f() { "$@"; }; g() { "$@"; }; i=1' 'f eval "(($i))"; g test "$i" = 0;' | L_bash_profile analyze
-PROFILING: 'f eval "(($i))"; g test "$i" = 0;' to /dev/stdout
-PROFING ENDED, output in /dev/stdout
-Top 6 cummulatively longest commands:
-  percent    spent_us  cmd               calls    spentPerCall  topCaller1    topCaller2    topCaller3    example
----------  ----------  --------------  -------  --------------  ------------  ------------  ------------  -------------
-31.4807        14_121  'test 1 = 0'        500          28.242  g 500                                     environment:6
-18.8269         8_445  '(( 1 ))'           500          16.89   f 500                                     environment:6
-17.2329         7_730  'f eval ((1))'      500          15.46   > 500                                     <:7
-16.689          7_486  'g test 1 = 0'      500          14.972  > 500                                     <:7
-15.6701         7_029  'eval ((1))'        500          14.058  f 500                                     environment:6
- 0.100321          45  'i=1'                 1          45      > 1                                       <:6
-
-Top 6 cummulatively longest commands per call:
-  percent    spent_us  cmd               calls    spentPerCall  topCaller1    topCaller2    topCaller3    example
----------  ----------  --------------  -------  --------------  ------------  ------------  ------------  -------------
- 0.100321          45  'i=1'                 1          45      > 1                                       <:6
-31.4807        14_121  'test 1 = 0'        500          28.242  g 500                                     environment:6
-18.8269         8_445  '(( 1 ))'           500          16.89   f 500                                     environment:6
-17.2329         7_730  'f eval ((1))'      500          15.46   > 500                                     <:7
-16.689          7_486  'g test 1 = 0'      500          14.972  > 500                                     <:7
-15.6701         7_029  'eval ((1))'        500          14.058  f 500                                     environment:6
-
-Top 2 cummulatively longest functions:
-  percent    spent_us  funcname      calls    spentPerCall    instructions    instructionsPerCall  location
----------  ----------  ----------  -------  --------------  --------------  ---------------------  -------------
-  34.4971      15_474  f               500          30.948            1000                      2  environment:6
-  31.4807      14_121  g               500          28.242             500                      1  environment:6
-
-Top 2 cummulatively longest functions per call:
-  percent    spent_us  funcname      calls    spentPerCall    instructions    instructionsPerCall  location
----------  ----------  ----------  -------  --------------  --------------  ---------------------  -------------
-  34.4971      15_474  f               500          30.948            1000                      2  environment:6
-  31.4807      14_121  g               500          28.242             500                      1  environment:6
-
-Script executed in 0:00:00.044856us, 2501 instructions, 2 functions.
-```
-
-# LICENSE
-
-Licensed under GPLv3.
-Written by Kamil Cukrowski 2024.
+This project is licensed under the GPLv3 License. See the [LICENSE.txt](LICENSE.txt) file for details.
