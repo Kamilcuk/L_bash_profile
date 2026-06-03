@@ -101,14 +101,27 @@ def asgroups(x: Iterable[T], n: int) -> Iterable[list[T]]:
 
 
 def drain_fifo(fifo_path: str, out_path: str):
-    """Background thread to drain FIFO to profilefile"""
-    with open(fifo_path, "rb") as fin:
-        with open(out_path, "wb") as fout:
-            while True:
-                data = fin.read(65536)
-                if not data:
-                    break
-                fout.write(data)
+    """Background thread to drain FIFO to profilefile.
+    Condenses QEMU output by counting Trace lines and only writing processed MARKERs.
+    """
+    insn_count = 0
+    with open(fifo_path, "rt", errors="ignore") as fin:
+        with open(out_path, "wt") as fout:
+            for line in fin:
+                if line.startswith("Trace "):
+                    insn_count += 1
+                elif line.startswith("# 0 "):
+                    # Process marker: replace placeholder 0 with actual instruction count
+                    # Original: # 0 PID LEVEL LINENO SOURCE FUNCNAME CMD
+                    parts = line.split(" ", 3)
+                    if len(parts) >= 3:
+                        parts[1] = str(insn_count)
+                        fout.write(" ".join(parts))
+                        fout.flush()
+                else:
+                    # Pass through anything else (shouldn't be much)
+                    fout.write(line)
+                    fout.flush()
 
 
 ###############################################################################
@@ -441,7 +454,7 @@ printf "%s\n" "${_L_bash_profile_var[@]}" >"$_L_bash_profile_file"
     "QEMU": r"""
 set -T
 %BEFORE%
-trap 'printf "MARKER: %s %s %s %s %q %q %q\n" "0" "${BASHPID:-${BASH_SUBSHELL:-$$}}" "${#BASH_SOURCE[@]}" "${LINENO:-0}" "${BASH_SOURCE[0]:-<}" "${FUNCNAME[0]:->}" "$BASH_COMMAND" >&%FD%' DEBUG
+trap 'printf "# %s %s %s %s %q %q %q\n" "0" "${BASHPID:-${BASH_SUBSHELL:-$$}}" "${#BASH_SOURCE[@]}" "${LINENO:-0}" "${BASH_SOURCE[0]:-<}" "${FUNCNAME[0]:->}" "$BASH_COMMAND" >&%FD%' DEBUG
 %SCRIPT%
 : END
 """,
@@ -553,21 +566,14 @@ class Analyzer:
         # read the data
         with self.args.profilefile as f:
             # Automatic format detection
+            # Condensed QEMU traces start with # <high_number>
+            # Standard traces start with # <timestamp>
             peek = f.readline()
-            if peek.startswith("Trace ") or peek.startswith("MARKER: "):
-                self.args.qemu = True
             
-            # Reset file pointer if we read something
-            # If it's stdin, we might have a problem, but click.File usually handles it or we can't seek.
-            # However, for stdin we can just prepend the peeked line to the iterator.
             def line_gen():
                 yield peek
                 yield from f
 
-            if self.args.qemu:
-                self.read_qemu_from_gen(line_gen())
-                return
-            
             lp = LineProcessor()
             with multiprocessing.Pool() as pool:
                 generator = asgroups(
@@ -576,33 +582,13 @@ class Analyzer:
                 self.records = sorted(
                     flatten(pool.map(lp.process_line, generator)), key=lambda x: x.idx
                 )
-
-    def read_qemu_from_gen(self, gen: Iterable[str]):
-        insn_count = 0
-        for i, line in maybe_take_n(enumerate(gen), self.args.linelimit):
-            if line.startswith("Trace "):
-                insn_count += 1
-            elif line.startswith("MARKER: "):
-                # Process marker
-                try:
-                    arr = line.split(" ", 8)
-                    rr = Record(
-                        idx=i,
-                        stamp_us=insn_count,
-                        pid=int(arr[2]),
-                        cmd=" ".join(arr[7:]).rstrip("\n"),
-                        level=int(arr[3]) + 1,
-                        lineno=int(arr[4]),
-                        source=arr[5],
-                        funcname=arr[6],
-                    )
-                    self.records.append(rr)
-                except (IndexError, ValueError):
-                    continue
-
-    def read_qemu(self):
-        with self.args.profilefile as f:
-            self.read_qemu_from_gen(f)
+            
+            # If the first record has a very large "timestamp" or if qemu flag is set,
+            # it's likely instructions. Standard timestamps are > 1e15 (us since epoch).
+            # Condensed QEMU start from 0 but quickly grow.
+            # Actually, let's just trust the user flag or the fact that they used --qemu profile.
+            # If we want auto-detection, we can check if spent_us values are "too small" for time but "just right" for instructions.
+            # For now, let's keep self.args.qemu if it was set via CLI.
 
     def calculate_records_spent_time(self):
         # convert absolute timestamp to relative
