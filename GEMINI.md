@@ -12,7 +12,8 @@
 ## Building and Running
 - **Installation**: Use `uv tool install L_bash_profile` or run directly with `uvx L_bash_profile`.
 - **Core Commands**:
-  - `profile`: Executes a script and saves the trace (e.g., `L_bash_profile profile -o trace.txt 'myscript.sh'`).
+  - `run`: Profiles and analyzes a script in one go (e.g., `L_bash_profile run --qemu 'myscript.sh'`).
+  - `profile`: Executes a script and saves the trace (e.g., `L_bash_profile profile --qemu -o trace.txt 'myscript.sh'`).
   - `analyze`: Processes a trace file into reports (e.g., `L_bash_profile analyze trace.txt --callstats graph.dot`).
 - **Makefile Tasks**:
   - `make test`: Runs `pytest`.

@@ -30,30 +30,26 @@ uvx L_bash_profile --help
 ## Basic Example
 
 ```bash
-$ L_bash_profile profile -o ./profile.txt 'i=0; while ((i < 100)); do ((i++)); done'
-PROFILING: i=0; while ((i < 100)); do ((i++)); done to ./profile.txt
+$ L_bash_profile run 'i=0; while ((i < 100)); do ((i++)); done'
+PROFILING: i=0; while ((i < 100)); do ((i++)); done to /dev/stdout
 PROFING ENDED, output in /dev/stdout
-
-$ L_bash_profile analyze ./profile.txt
 Top 3 cummulatively longest commands:
   percent    spent_us  cmd                   calls    spentPerCall  topCaller1    topCaller2    topCaller3    example
 ---------  ----------  ------------------  -------  --------------  ------------  ------------  ------------  ---------
  49.5498        1_596  \(\(i\ \<\ 100\)\)      101          15.802  \> 101                                    \<:7
  48.9289        1_576  \(\(i++\)\)             100          15.76   \> 100                                    \<:7
   1.52127          49  i=0                       1          49      \> 1                                      \<:7
-
-Top 3 cummulatively longest commands per call:
-  percent    spent_us  cmd                   calls    spentPerCall  topCaller1    topCaller2    topCaller3    example
----------  ----------  ------------------  -------  --------------  ------------  ------------  ------------  ---------
-  1.52127          49  i=0                       1          49      \> 1                                      \<:7
- 49.5498        1_596  \(\(i\ \<\ 100\)\)      101          15.802  \> 101                                    \<:7
- 48.9289        1_576  \(\(i++\)\)             100          15.76   \> 100                                    \<:7
-
-No functions found
-Script executed in 0:00:00.003221us, 202 instructions, 0 functions.
+...
 ```
 
 ## Subcommands
+
+### `run`
+Profiles and analyzes a Bash script in one go. This is a convenient shortcut that combines the `profile` and `analyze` steps.
+
+```bash
+$ L_bash_profile run --qemu --callstatscmds 'f() { :; }; f'
+```
 
 ### `profile`
 Executes a Bash script and generates a profile file containing the execution trace. It supports different methods:
