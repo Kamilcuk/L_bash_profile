@@ -10,8 +10,11 @@ import os
 import pstats
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from collections import Counter
 from dataclasses import astuple, dataclass, field
@@ -34,7 +37,7 @@ def md5sum(data: str) -> str:
     return hashlib.md5(data.encode("utf-8")).hexdigest()
 
 
-def clamp(n, minn, maxn):
+def clamp(n: int, minn: int, maxn: int) -> int:
     return max(min(maxn, n), minn)
 
 
@@ -95,6 +98,17 @@ def asgroups(x: Iterable[T], n: int) -> Iterable[list[T]]:
             i += 1
     if group:
         yield group
+
+
+def drain_fifo(fifo_path: str, out_path: str):
+    """Background thread to drain FIFO to profilefile"""
+    with open(fifo_path, "rb") as fin:
+        with open(out_path, "wb") as fout:
+            while True:
+                data = fin.read(65536)
+                if not data:
+                    break
+                fout.write(data)
 
 
 ###############################################################################
@@ -329,6 +343,9 @@ class AnalyzeArgs:
             Usefull for analysis of a single bash function execution
             """
     )
+    qemu: Optional[bool] = clickdc.option(
+        help="Use QEMU profiling mode logic. Counts Trace lines between MARKERs."
+    )
 
     profilefile: io.TextIOBase = clickdc.argument(
         type=click.File(errors="replace", lazy=True),
@@ -421,12 +438,20 @@ trap 'printf -v "_L_bash_profile_var[${#_L_bash_profile_var[@]}]" "# %s %s %s %s
 %SCRIPT%
 printf "%s\n" "${_L_bash_profile_var[@]}" >"$_L_bash_profile_file"
 """,
+    "QEMU": r"""
+set -T
+%BEFORE%
+trap 'printf "MARKER: %s %s %s %s %q %q %q\n" "0" "${BASHPID:-${BASH_SUBSHELL:-$$}}" "${#BASH_SOURCE[@]}" "${LINENO:-0}" "${BASH_SOURCE[0]:-<}" "${FUNCNAME[0]:->}" "$BASH_COMMAND" >&%FD%' DEBUG
+%SCRIPT%
+: END
+""",
 }
 PROFILEMETHODS.update(
     {
         "1": PROFILEMETHODS["DEBUG"],
         "2": PROFILEMETHODS["XTRACE"],
         "3": PROFILEMETHODS["VAR"],
+        "4": PROFILEMETHODS["QEMU"],
     }
 )
 
@@ -514,21 +539,70 @@ class Analyzer:
         return Timeit(name if self.args.showtimes else "")
 
     def print_stats(self):
-        print(
-            f"Script executed in {timedelta(microseconds=self.get_callgraph.totaltime)}us, {len(self.records)} instructions, {len(self.functions)} functions."
-        )
+        totaltime = self.get_callgraph.totaltime
+        if self.args.qemu:
+            print(
+                f"Script executed in {totaltime} instructions, {len(self.records)} instructions, {len(self.functions)} functions."
+            )
+        else:
+            print(
+                f"Script executed in {timedelta(microseconds=totaltime)}us, {len(self.records)} instructions, {len(self.functions)} functions."
+            )
 
     def read(self):
         # read the data
-        lp = LineProcessor()
         with self.args.profilefile as f:
+            # Automatic format detection
+            peek = f.readline()
+            if peek.startswith("Trace ") or peek.startswith("MARKER: "):
+                self.args.qemu = True
+            
+            # Reset file pointer if we read something
+            # If it's stdin, we might have a problem, but click.File usually handles it or we can't seek.
+            # However, for stdin we can just prepend the peeked line to the iterator.
+            def line_gen():
+                yield peek
+                yield from f
+
+            if self.args.qemu:
+                self.read_qemu_from_gen(line_gen())
+                return
+            
+            lp = LineProcessor()
             with multiprocessing.Pool() as pool:
                 generator = asgroups(
-                    maybe_take_n(enumerate(f), self.args.linelimit), 100
+                    maybe_take_n(enumerate(line_gen()), self.args.linelimit), 100
                 )
                 self.records = sorted(
                     flatten(pool.map(lp.process_line, generator)), key=lambda x: x.idx
                 )
+
+    def read_qemu_from_gen(self, gen: Iterable[str]):
+        insn_count = 0
+        for i, line in maybe_take_n(enumerate(gen), self.args.linelimit):
+            if line.startswith("Trace "):
+                insn_count += 1
+            elif line.startswith("MARKER: "):
+                # Process marker
+                try:
+                    arr = line.split(" ", 8)
+                    rr = Record(
+                        idx=i,
+                        stamp_us=insn_count,
+                        pid=int(arr[2]),
+                        cmd=" ".join(arr[7:]).rstrip("\n"),
+                        level=int(arr[3]) + 1,
+                        lineno=int(arr[4]),
+                        source=arr[5],
+                        funcname=arr[6],
+                    )
+                    self.records.append(rr)
+                except (IndexError, ValueError):
+                    continue
+
+    def read_qemu(self):
+        with self.args.profilefile as f:
+            self.read_qemu_from_gen(f)
 
     def calculate_records_spent_time(self):
         # convert absolute timestamp to relative
@@ -926,9 +1000,11 @@ class ProfileArgs:
         1 or DEBUG uses trap DEBUG to output executed commands to a file.
         2 or XTRACE uses set -x with BASH_XTRACEFD and FD4 to output the commands.
         3 or VAR uses trap DEBUG to append commands to an array and then write it to a file on the end of execution.
+        4 or QEMU uses QEMU User-Mode Emulation to count exact CPU instructions.
         DEBUG is the most reliable.
         XTRACE is the fastest, but set -x prints after expansions have been done to the command.
         VAR does not handle subshells.
+        QEMU is the most precise (instruction level).
         """,
     )
     repeat: int = clickdc.option(
@@ -942,6 +1018,9 @@ class ProfileArgs:
     )
     dryrun: bool = clickdc.option(
         help="Do not run the script, just print the generated script."
+    )
+    qemu: bool = clickdc.option(
+        help="Shortcut for --method QEMU. Uses QEMU User-Mode Emulation."
     )
     script: str = clickdc.argument()
     args: tuple[str, ...] = clickdc.argument(nargs=-1)
@@ -970,6 +1049,8 @@ Examples:
 @click_help()
 @clickdc.adddc("args", ProfileArgs)
 def profile(args: ProfileArgs):
+    if args.qemu:
+        args.method = "QEMU"
     profilefile = (
         "/dev/stdout"
         if not args.output or args.output == sys.stdout
@@ -982,11 +1063,53 @@ def profile(args: ProfileArgs):
         .replace("%SCRIPT%", script)
     )
     cmd = ["bash", "-c", script, "bash", profilefile, *args.args]
-    if args.dryrun:
-        print(" ".join(shlex.quote(x) for x in cmd))
-        exit()
-    print(f"PROFILING: {shlex.quote(args.script)} to {profilefile}", file=sys.stderr)
-    subprocess.run(cmd)
+    if args.method in ["4", "QEMU"]:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fifo = os.path.join(tmpdir, "fifo")
+            os.mkfifo(fifo)
+
+            drain_thread = threading.Thread(target=drain_fifo, args=(fifo, profilefile))
+            drain_thread.start()
+
+            fifo_fd = os.open(fifo, os.O_WRONLY)
+            try:
+                # Replace FD placeholder in the script
+                script = script.replace("%FD%", str(fifo_fd))
+
+                cmd = [
+                    "qemu-x86_64",
+                    "-one-insn-per-tb",
+                    "-d",
+                    "exec",
+                    "-D",
+                    fifo,
+                    "/bin/bash",
+                    "-c",
+                    script,
+                    "bash",
+                    profilefile,
+                    *args.args,
+                ]
+
+                if args.dryrun:
+                    print(" ".join(shlex.quote(x) for x in cmd))
+                    return
+
+                print(
+                    f"PROFILING: {shlex.quote(args.script)} to {profilefile}",
+                    file=sys.stderr,
+                )
+                subprocess.run(cmd, pass_fds=[fifo_fd])
+            finally:
+                os.close(fifo_fd)
+                drain_thread.join()
+    else:
+        if args.dryrun:
+            print(" ".join(shlex.quote(x) for x in cmd))
+            return
+        print(f"PROFILING: {shlex.quote(args.script)} to {profilefile}", file=sys.stderr)
+        subprocess.run(cmd)
+
     print(f"PROFING ENDED, output in {profilefile}", file=sys.stderr)
 
 
@@ -1045,6 +1168,10 @@ def showpstats(raw: bool, file: io.FileIO):
 
 
 ###############################################################################
+
+if __name__ == "__main__":
+    cli.main()
+######################
 
 if __name__ == "__main__":
     cli.main()

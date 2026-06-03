@@ -56,13 +56,18 @@ Script executed in 0:00:00.003221us, 202 instructions, 0 functions.
 ## Subcommands
 
 ### `profile`
-Executes a Bash script and generates a profile file containing the execution trace. It supports different methods (`DEBUG` trap, `XTRACE`, or variable-based) to capture timestamps.
+Executes a Bash script and generates a profile file containing the execution trace. It supports different methods:
+- `DEBUG` trap: Most reliable for general use.
+- `XTRACE` (`set -x`): Fastest, but shows expanded commands.
+- `VAR`: Uses an array to collect data, avoids some subshell issues.
+- `QEMU`: High-precision, instruction-level profiling using QEMU User-Mode Emulation. See [QEMU Profiling Documentation](doc/QEMU_PROFILING.md) for details.
 
 ### `analyze`
 Analyzes a profile file and generates human-readable reports. It can also output visualization files:
 - `--callgraph`: Full execution trace in DOT format.
 - `--callstats`: Statistics-based callgraph in DOT format.
 - `--pstats`: Python pstats file for use with tools like `snakeviz`.
+- `--qemu`: Use instruction-counting logic for QEMU trace files.
 
 ---
 

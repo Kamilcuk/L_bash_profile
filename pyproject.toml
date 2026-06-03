@@ -12,11 +12,17 @@ license = { file = "LICENSE.txt" }
 keywords = ["bash", "profile", "development"]
 authors = [{ name = "Kamil Cukrowski", email = "kamilcukrowski@gmail.com" }]
 maintainers = [{ name = "Kamil Cukrowski", email = "kamilcukrowski@gmail.com" }]
-dynamic = ["dependencies", "optional-dependencies"]
+dependencies = [
+    "graphviz",
+    "tabulate",
+    "click",
+    "clickdc",
+]
 
-[tool.setuptools.dynamic]
-dependencies = {file = ["requirements.txt"]}
-optional-dependencies = {test = { file = ["requirements-test.txt"] }}
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
 
 [project.urls]
 "Homepage" = "https://github.com/kamilcuk/L_bash_profile"

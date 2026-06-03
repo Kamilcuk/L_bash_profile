@@ -25,3 +25,10 @@ def test_1():
             run("L_bash_profile analyze --pstats %s %s", dotf, tmpf)
             run("L_bash_profile showpstats %s", dotf)
             run("L_bash_profile showpstats --raw %s", dotf)
+
+
+def test_qemu():
+    with tempfile.NamedTemporaryFile() as f:
+        tmpf = f.name
+        run("L_bash_profile profile -m QEMU -o %s 'a=1; b=2; c=$((a+b))'", tmpf)
+        run("L_bash_profile analyze --qemu %s", tmpf)
