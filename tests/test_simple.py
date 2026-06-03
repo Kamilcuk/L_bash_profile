@@ -32,3 +32,7 @@ def test_qemu():
         tmpf = f.name
         run("L_bash_profile profile --qemu -o %s 'a=1; b=2; c=$((a+b))'", tmpf)
         run("L_bash_profile analyze --qemu %s", tmpf)
+
+
+def test_run():
+    run("L_bash_profile run --qemu --callstatscmds 'f() { :; }; f'")

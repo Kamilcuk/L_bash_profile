@@ -100,7 +100,7 @@ def asgroups(x: Iterable[T], n: int) -> Iterable[list[T]]:
         yield group
 
 
-def drain_fifo(fifo_path: str, out_path: str):
+def qemu_output_drain_fifo(fifo_path: str, out_path: str):
     """Background thread to drain FIFO to profilefile.
     Condenses QEMU output by counting Trace lines and only writing processed MARKERs.
     """
@@ -1012,29 +1012,7 @@ class ProfileArgs:
     args: tuple[str, ...] = clickdc.argument(nargs=-1)
 
 
-@cli.command(
-    help="""
-Profiles a Bash script and generates a file with the execution trace.
-
-The script has to run commands in the current execution environment.
-Use `source ./script.sh` to run a script from a file.
-""",
-    epilog="""
-\b
-Examples:
-  # Profile a simple command and analyze the output
-  L_bash_profile profile -n10 'echo "hello world"' | L_bash_profile analyze
-
-  # Profile a more complex script with a variable
-  L_bash_profile profile -n200 -b i=0 '((i)); [[ $i ]];' | L_bash_profile analyze
-
-  # Profile a script with functions
-  L_bash_profile profile -n500 -b 'f() { "$@"; }; g() { "$@"; }; i=1' 'f eval "(($i))"; g test "$i" = 0;' | L_bash_profile analyze
-""",
-)
-@click_help()
-@clickdc.adddc("args", ProfileArgs)
-def profile(args: ProfileArgs):
+def _profile(args: ProfileArgs):
     if args.qemu:
         args.method = "QEMU"
     profilefile = (
@@ -1054,7 +1032,9 @@ def profile(args: ProfileArgs):
             fifo = os.path.join(tmpdir, "fifo")
             os.mkfifo(fifo)
 
-            drain_thread = threading.Thread(target=drain_fifo, args=(fifo, profilefile))
+            drain_thread = threading.Thread(
+                target=qemu_output_drain_fifo, args=(fifo, profilefile)
+            )
             drain_thread.start()
 
             fifo_fd = os.open(fifo, os.O_WRONLY)
@@ -1097,6 +1077,115 @@ def profile(args: ProfileArgs):
         subprocess.run(cmd)
 
     print(f"PROFING ENDED, output in {profilefile}", file=sys.stderr)
+
+
+@cli.command(
+    help="""
+Profiles a Bash script and generates a file with the execution trace.
+
+The script has to run commands in the current execution environment.
+Use `source ./script.sh` to run a script from a file.
+""",
+    epilog="""
+\b
+Examples:
+  # Profile a simple command and analyze the output
+  L_bash_profile profile -n10 'echo "hello world"' | L_bash_profile analyze
+
+  # Profile a more complex script with a variable
+  L_bash_profile profile -n200 -b i=0 '((i)); [[ $i ]];' | L_bash_profile analyze
+
+  # Profile a script with functions
+  L_bash_profile profile -n500 -b 'f() { "$@"; }; g() { "$@"; }; i=1' 'f eval "(($i))"; g test "$i" = 0;' | L_bash_profile analyze
+""",
+)
+@click_help()
+@clickdc.adddc("args", ProfileArgs)
+def profile(args: ProfileArgs):
+    _profile(args)
+
+
+@dataclass
+class RunArgs(AnalyzeArgs):
+    # Overwrite profilefile from AnalyzeArgs to be optional
+    profilefile: Optional[io.TextIOBase] = field(default=None)
+
+    method: str = clickdc.option(
+        "-m",
+        default="1",
+        type=click.Choice(list(PROFILEMETHODS.keys()), case_sensitive=False),
+        help="""
+        Chooses the method to profile the script.
+        1 or DEBUG uses trap DEBUG to output executed commands to a file.
+        2 or XTRACE uses set -x with BASH_XTRACEFD and FD4 to output the commands.
+        3 or VAR uses trap DEBUG to append commands to an array and then write it to a file on the end of execution.
+        4 or QEMU uses QEMU User-Mode Emulation to count exact CPU instructions.
+        DEBUG is the most reliable.
+        XTRACE is the fastest, but set -x prints after expansions have been done to the command.
+        VAR does not handle subshells.
+        QEMU is the most precise (instruction level).
+        """,
+    )
+    repeat: int = clickdc.option(
+        "-n", default=1, help="Repeat the script n times joined with newlines."
+    )
+    before: str = clickdc.option(
+        "-b",
+        help="Commands to run before the script. Use to set up the environment.",
+        default="",
+        required=False,
+    )
+    dryrun: bool = clickdc.option(
+        help="Do not run the script, just print the generated script."
+    )
+    qemu: bool = clickdc.option(
+        help="Shortcut for --method QEMU. Uses QEMU User-Mode Emulation."
+    )
+    script: str = clickdc.argument()
+    args: tuple[str, ...] = clickdc.argument(nargs=-1)
+
+
+@cli.command(
+    help="""
+Profiles and analyzes a Bash script in one go.
+""",
+)
+@click_help()
+@clickdc.adddc("args", RunArgs)
+def run(args: RunArgs):
+    with tempfile.NamedTemporaryFile() as tmp:
+        # 1. Profile
+        p_args = ProfileArgs()
+        p_args.output = io.FileIO(tmp.name, "w")
+        p_args.method = args.method
+        p_args.repeat = args.repeat
+        p_args.before = args.before
+        p_args.dryrun = args.dryrun
+        p_args.qemu = args.qemu
+        p_args.script = args.script
+        p_args.args = args.args
+        _profile(p_args)
+
+        if args.dryrun:
+            return
+
+        # 2. Analyze
+        a_args = AnalyzeArgs()
+        for f in field_names(AnalyzeArgs):
+            if hasattr(args, f):
+                setattr(a_args, f, getattr(args, f))
+        a_args.profilefile = open(tmp.name, "r")
+        Analyzer(a_args).run()
+
+
+def field_names(cls) -> list[str]:
+    return [f.name for f in field_list(cls)]
+
+
+def field_list(cls):
+    from dataclasses import fields
+
+    return fields(cls)
 
 
 @cli.command(
