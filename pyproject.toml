@@ -30,7 +30,7 @@ test = [
 "Source" = "https://github.com/kamilcuk/L_bash_profile/"
 
 [project.scripts]
-L_bash_profile = "L_bash_profile:cli.main"
+L_bash_profile = "L_bash_profile.L_bash_profile:cli.main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
