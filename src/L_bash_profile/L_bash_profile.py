@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import locale
 import marshal
 import multiprocessing
 import os
@@ -13,7 +14,8 @@ import sys
 import tempfile
 import threading
 import time
-from collections import Counter
+import statistics
+from collections import Counter, defaultdict
 from dataclasses import astuple, dataclass, field
 from datetime import timedelta
 from functools import cached_property
@@ -24,6 +26,7 @@ import clickdc
 from graphviz import Digraph
 from tabulate import tabulate
 
+from . import color
 from .common import (
     click_help,
     qemu_output_drain_fifo,
@@ -249,6 +252,14 @@ class AnalyzeArgs:
         help="Dump callgraph in text format to a file command by command, call by call.",
     )
 
+    treelimit: Optional[int] = clickdc.option(
+        default=3,
+        show_default=True,
+        help="""
+        When generating ASCII call tree,
+        limit the number of children of each point to max this number.
+        """,
+    )
     dotlimit: Optional[int] = clickdc.option(
         default=0,
         show_default=True,
@@ -450,6 +461,7 @@ class Analyzer:
             self.print_top_longest_commands()
         with self.timeit("Getting longest functions"):
             self.print_top_longest_functions()
+        self.print_tree()
         if self.args.dumprecords:
             self.dump_records(self.args.dumprecords)
         if self.args.callgraph:
@@ -637,18 +649,18 @@ class Analyzer:
             )[:3]
             longest_commands.append(
                 {
-                    "%": f"{stats.spent / totaltime * 100:g}",
-                    "us": stats.spent,
-                    "cmd": dots_trim(cmd, width=40),
+                    "%": color.pct(f"{stats.spent / totaltime * 100:g}"),
+                    "us": color.time(stats.spent),
+                    "cmd": color.func(dots_trim(cmd, width=40)),
                     "calls": len(stats.records),
-                    "spent/call": f"{stats.spent / len(stats.records):g}",
-                    "caller1": getdefault(top_callers, 0, ("", ""))[0],
-                    "caller2": getdefault(top_callers, 1, ("", ""))[0],
-                    "caller3": getdefault(top_callers, 2, ("", ""))[0],
-                    "location": stats.get_example(),
+                    "spent/call": color.time(f"{stats.spent / len(stats.records):g}"),
+                    "caller1": color.func(getdefault(top_callers, 0, ("", ""))[0]),
+                    "caller2": color.func(getdefault(top_callers, 1, ("", ""))[0]),
+                    "caller3": color.func(getdefault(top_callers, 2, ("", ""))[0]),
+                    "location": color.loc(stats.get_example()),
                 }
             )
-        print("Top 10 longest commands (total):")
+        print(color.style("Top 10 longest commands (total):", bold=True))
         print(tabulate(longest_commands, headers="keys"))
         print()
 
@@ -663,18 +675,18 @@ class Analyzer:
             )[:3]
             longest_commands_per_call.append(
                 {
-                    "%": f"{stats.spent / totaltime * 100:g}",
-                    "us": stats.spent,
-                    "cmd": dots_trim(cmd, width=40),
+                    "%": color.pct(f"{stats.spent / totaltime * 100:g}"),
+                    "us": color.time(stats.spent),
+                    "cmd": color.func(dots_trim(cmd, width=40)),
                     "calls": len(stats.records),
-                    "spent/call": f"{stats.spent / len(stats.records):g}",
-                    "caller1": getdefault(top_callers, 0, ("", ""))[0],
-                    "caller2": getdefault(top_callers, 1, ("", ""))[0],
-                    "caller3": getdefault(top_callers, 2, ("", ""))[0],
-                    "location": stats.get_example(),
+                    "spent/call": color.time(f"{stats.spent / len(stats.records):g}"),
+                    "caller1": color.func(getdefault(top_callers, 0, ("", ""))[0]),
+                    "caller2": color.func(getdefault(top_callers, 1, ("", ""))[0]),
+                    "caller3": color.func(getdefault(top_callers, 2, ("", ""))[0]),
+                    "location": color.loc(stats.get_example()),
                 }
             )
-        print("Top 10 longest commands (per call):")
+        print(color.style("Top 10 longest commands (per call):", bold=True))
         print(tabulate(longest_commands_per_call, headers="keys"))
         print()
 
@@ -690,19 +702,19 @@ class Analyzer:
                 continue
             longest_functions.append(
                 {
-                    "%": f"{stats.spent / totaltime * 100:g}",
-                    "incl": stats.spent,
-                    "excl": stats.spent_exclusive,
-                    "func": dots_trim(str(func), width=40),
+                    "%": color.pct(f"{stats.spent / totaltime * 100:g}"),
+                    "incl": color.time(stats.spent),
+                    "excl": color.time(stats.spent_exclusive),
+                    "func": color.func(dots_trim(str(func), width=40)),
                     "calls": stats.calls,
-                    "spent/call": f"{stats.spent / stats.calls:g}",
-                    "location": stats.get_example(),
+                    "spent/call": color.time(f"{stats.spent / stats.calls:g}"),
+                    "location": color.loc(stats.get_example()),
                 }
             )
         if not longest_functions:
             print("No functions found")
             return
-        print("Top 10 longest functions (total):")
+        print(click.style("Top 10 longest functions (total):", bold=True))
         print(tabulate(longest_functions, headers="keys"))
         print()
 
@@ -716,17 +728,55 @@ class Analyzer:
                 continue
             longest_functions_per_call.append(
                 {
-                    "%": f"{stats.spent / totaltime * 100:g}",
-                    "incl": stats.spent,
-                    "excl": stats.spent_exclusive,
-                    "func": dots_trim(str(func), width=40),
+                    "%": color.pct(f"{stats.spent / totaltime * 100:g}"),
+                    "incl": color.time(stats.spent),
+                    "excl": color.time(stats.spent_exclusive),
+                    "func": color.func(dots_trim(str(func), width=40)),
                     "calls": stats.calls,
-                    "spent/call": f"{stats.spent / stats.calls:g}",
-                    "location": stats.get_example(),
+                    "spent/call": color.time(f"{stats.spent / stats.calls:g}"),
+                    "location": color.loc(stats.get_example()),
                 }
             )
-        print("Top 10 longest functions (per call):")
+        print(click.style("Top 10 longest functions (per call):", bold=True))
         print(tabulate(longest_functions_per_call, headers="keys"))
+        print()
+
+    def print_tree(self):
+        root_node = self.get_callgraph
+        if root_node.totaltime == 0:
+            return
+
+        def render(node: CallgraphNode, parent_total: int, prefix: str = "", is_last: bool = True):
+            # Aggregate all identical children under this parent
+            groups = defaultdict(list)
+            for rr in node.records:
+                if isinstance(rr, CallgraphNode):
+                    groups[rr.function].append(rr)
+
+            # Sort by total time per group
+            aggs = sorted(
+                [(f, sum(c.totaltime for c in g), g) for f, g in groups.items()],
+                key=lambda x: x[1],
+                reverse=True,
+            )
+            if self.args.treelimit:
+                aggs = aggs[: self.args.treelimit]
+
+            for i, (func, total, group) in enumerate(aggs):
+                p = color.pct(f"{total / parent_total * 100:.1f}%")
+                unit = "ins" if self.args.qemu else "us"
+                stats = f" ({len(group)} calls, avg {color.time(int(statistics.mean(c.totaltime for c in group)))}{unit}, stddev {color.time(int(statistics.pstdev(c.totaltime for c in group)))}{unit})" if len(group) > 1 else ""
+                
+                last = i == len(aggs) - 1
+                print(f"{prefix}{'└── ' if last else '├── '}{color.func(str(func))} {color.time(total)}{unit} {p}{stats}")
+                
+                # Recurse into the first child as representative for subtree structure
+                render(group[0], total, prefix + ("    " if last else "│   "), True)
+
+        print(click.style(f"Call Tree{f' (top {self.args.treelimit} children)' if self.args.treelimit else ''}:", bold=True))
+        if root_node.function.funcname:
+            print(f"{color.func(str(root_node.function))} {color.time(root_node.totaltime)}{'ins' if self.args.qemu else 'us'} {color.pct('100.0%')}")
+        render(root_node, root_node.totaltime, "", True)
         print()
 
     def generate_dot_callgraph(self, file: str):
@@ -930,7 +980,10 @@ Written by Kamil Cukrowski 2024. Licensed under GPLv3.
 )
 @click_help()
 def cli():
-    pass
+    try:
+        locale.setlocale(locale.LC_ALL, "")
+    except locale.Error:
+        pass
 
 
 @cli.command(
