@@ -285,7 +285,12 @@ class RecordsSpentInterface:
         self.spent += rr.spent_us
 
     def get_example(self):
+        if not self.records:
+            return "~:0"
         cmdcnt = Counter(r.cmd for r in self.records)
+        if not cmdcnt:
+            r = self.records[0]
+            return f"{r.source or '~'}:{r.lineno}"
         most_common_cmd: str = cmdcnt.most_common(1)[0][0]
         r: Record = next(r for r in self.records if r.cmd == most_common_cmd)
         return f"{r.source or '~'}:{r.lineno}"
@@ -296,6 +301,7 @@ class FunctionStats(RecordsSpentInterface):
     """Accumulated data about a single function"""
 
     calls: int = 0
+    spent_exclusive: int = 0
 
 
 @dataclass
@@ -345,7 +351,7 @@ set -T
 exec {_L_bash_profile_fd}>"$1"
 shift
 %BEFORE%
-trap 'printf "# %s %s %s %s %q %q %q\n" "${EPOCHREALTIME//[.,]}" "${BASHPID:-${BASH_SUBSHELL:-$$}}" "${#BASH_SOURCE[@]}" "${LINENO:-0}" "${BASH_SOURCE[0]:-<}" "${FUNCNAME[0]:->}" "$BASH_COMMAND" >&"$_L_bash_profile_fd"' DEBUG
+trap 'if [[ ${__L_BASH_PROFILE_PID:-} != $BASHPID ]]; then trap "trap \"\" DEBUG; printf \"# %s %s %s %s %q %q %q\n\" \"\${EPOCHREALTIME//[.,]}\" \"\$BASHPID\" \"\${#BASH_SOURCE[@]}\" \"\${LINENO:-0}\" \"\${BASH_SOURCE[0]:-<}\" \"\${FUNCNAME[0]:->}\" EXIT >&\"$_L_bash_profile_fd\"" EXIT; __L_BASH_PROFILE_PID=$BASHPID; fi; printf "# %s %s %s %s %q %q %q\n" "${EPOCHREALTIME//[.,]}" "${BASHPID:-${BASH_SUBSHELL:-$$}}" "${#BASH_SOURCE[@]}" "${LINENO:-0}" "${BASH_SOURCE[0]:-<}" "${FUNCNAME[0]:->}" "$BASH_COMMAND" >&"$_L_bash_profile_fd"' DEBUG
 %SCRIPT%
 : END
 """,
@@ -498,43 +504,49 @@ class Analyzer:
             # For now, let's keep self.args.qemu if it was set via CLI.
 
     def calculate_records_spent_time(self):
-        # convert absolute timestamp to relative
-        for i in range(len(self.records) - 1):
-            self.records[i].spent_us = (
-                self.records[i + 1].stamp_us - self.records[i].stamp_us
-            )
-        self.records.pop()
+        # Group records by PID to calculate spent time correctly for concurrent processes
+        by_pid = {}
+        for rr in self.records:
+            by_pid.setdefault(rr.pid, []).append(rr)
+
+        for pid_records in by_pid.values():
+            # Sort by index just in case, although they should already be sorted
+            pid_records.sort(key=lambda x: x.idx)
+            for i in range(len(pid_records) - 1):
+                pid_records[i].spent_us = (
+                    pid_records[i + 1].stamp_us - pid_records[i].stamp_us
+                )
+            # The last record of each PID has unknown spent_us
+            # We could set it to 0 or leave it (it defaults to 0 in Record)
+            pid_records[-1].spent_us = 0
 
     @cached_property
     def get_callgraph(self):
         callgraph = CallgraphNode()
-        curnode = callgraph
-        curlevel = 1
-        pid = -1
-        for rr in self.records:
-            # Filter only one pid
-            if pid == -1:
-                pid = rr.pid
-            if rr.pid != pid:
-                continue
-            #
-            if rr.level > curlevel:
-                assert rr.level - curlevel == 1, (
-                    f"curlevel={curlevel} rr.level={rr.level} rr={rr} isCallgraph={curnode == callgraph} curnode={curnode.strtree()}"
-                )
 
-                newnode = CallgraphNode(rr.function(), parent=curnode)
-                curnode.records.append(newnode)
-                curnode = newnode
-            elif rr.level < curlevel:
-                for i in range(curlevel - rr.level):
-                    assert curnode.parent, (
-                        f"curlevel={curlevel} rr.level={rr.level} i={i} rr={rr} isCallgraph={curnode == callgraph} curnode={curnode.strtree()}"
-                    )
-                    if curnode.parent:
-                        curnode = curnode.parent
-            curlevel = rr.level
-            curnode.records.append(rr)
+        by_pid = {}
+        for rr in self.records:
+            by_pid.setdefault(rr.pid, []).append(rr)
+
+        for pid, pid_records in by_pid.items():
+            curnode = callgraph
+            curlevel = 1
+            for rr in pid_records:
+                #
+                if rr.level > curlevel:
+                    # For new PID, level might start higher than 1 if it's a subshell
+                    # But actually BASH_SOURCE depth starts at 1 usually.
+                    # If it jumps, we should create intermediate nodes or just handle it.
+                    for _ in range(rr.level - curlevel):
+                        newnode = CallgraphNode(rr.function(), parent=curnode)
+                        curnode.records.append(newnode)
+                        curnode = newnode
+                elif rr.level < curlevel:
+                    for i in range(curlevel - rr.level):
+                        if curnode.parent:
+                            curnode = curnode.parent
+                curlevel = rr.level
+                curnode.records.append(rr)
 
         if self.args.filterfunction:
             funcnamergx = re.compile(self.args.filterfunction)
@@ -593,10 +605,20 @@ class Analyzer:
             if node.function not in funcs:
                 funcs[node.function] = FunctionStats()
             funcs[node.function].calls += 1
+            funcs[node.function].spent += node.totaltime
+            funcs[node.function].spent_exclusive += node.inlinetime
+
+            def collect_records(n: CallgraphNode):
+                for rr in n.records:
+                    if isinstance(rr, Record):
+                        funcs[node.function].records.append(rr)
+                    else:
+                        collect_records(rr)
+
+            collect_records(node)
+
             for rr in node.records:
-                if isinstance(rr, Record):
-                    funcs[node.function].add_record(rr)
-                else:
+                if isinstance(rr, CallgraphNode):
                     traverse(rr)
 
         traverse(self.get_callgraph)
@@ -615,18 +637,18 @@ class Analyzer:
             )[:3]
             longest_commands.append(
                 {
-                    "percent": f"{stats.spent / totaltime * 100:g}",
-                    "spent_us": stats.spent,
-                    "cmd": dots_trim(cmd),
+                    "%": f"{stats.spent / totaltime * 100:g}",
+                    "us": stats.spent,
+                    "cmd": dots_trim(cmd, width=40),
                     "calls": len(stats.records),
-                    "spentPerCall": f"{stats.spent / len(stats.records):g}",
-                    "topCaller1": getdefault(top_callers, 0, ("", ""))[0],
-                    "topCaller2": getdefault(top_callers, 1, ("", ""))[0],
-                    "topCaller3": getdefault(top_callers, 2, ("", ""))[0],
-                    "example": stats.get_example(),
+                    "spent/call": f"{stats.spent / len(stats.records):g}",
+                    "caller1": getdefault(top_callers, 0, ("", ""))[0],
+                    "caller2": getdefault(top_callers, 1, ("", ""))[0],
+                    "caller3": getdefault(top_callers, 2, ("", ""))[0],
+                    "location": stats.get_example(),
                 }
             )
-        print("Top 1 cummulatively longest commands:")
+        print("Top 10 longest commands (total):")
         print(tabulate(longest_commands, headers="keys"))
         print()
 
@@ -641,18 +663,18 @@ class Analyzer:
             )[:3]
             longest_commands_per_call.append(
                 {
-                    "percent": f"{stats.spent / totaltime * 100:g}",
-                    "spent_us": stats.spent,
-                    "cmd": dots_trim(cmd),
+                    "%": f"{stats.spent / totaltime * 100:g}",
+                    "us": stats.spent,
+                    "cmd": dots_trim(cmd, width=40),
                     "calls": len(stats.records),
-                    "spentPerCall": f"{stats.spent / len(stats.records):g}",
-                    "topCaller1": getdefault(top_callers, 0, ("", ""))[0],
-                    "topCaller2": getdefault(top_callers, 1, ("", ""))[0],
-                    "topCaller3": getdefault(top_callers, 2, ("", ""))[0],
-                    "example": stats.get_example(),
+                    "spent/call": f"{stats.spent / len(stats.records):g}",
+                    "caller1": getdefault(top_callers, 0, ("", ""))[0],
+                    "caller2": getdefault(top_callers, 1, ("", ""))[0],
+                    "caller3": getdefault(top_callers, 2, ("", ""))[0],
+                    "location": stats.get_example(),
                 }
             )
-        print("Top 1 cummulatively longest commands per call:")
+        print("Top 10 longest commands (per call):")
         print(tabulate(longest_commands_per_call, headers="keys"))
         print()
 
@@ -668,18 +690,19 @@ class Analyzer:
                 continue
             longest_functions.append(
                 {
-                    "percent": f"{stats.spent / totaltime * 100:g}",
-                    "spent_us": stats.spent,
-                    "func": dots_trim(str(func)),
+                    "%": f"{stats.spent / totaltime * 100:g}",
+                    "incl": stats.spent,
+                    "excl": stats.spent_exclusive,
+                    "func": dots_trim(str(func), width=40),
                     "calls": stats.calls,
-                    "spentPerCall": f"{stats.spent / stats.calls:g}",
-                    "example": stats.get_example(),
+                    "spent/call": f"{stats.spent / stats.calls:g}",
+                    "location": stats.get_example(),
                 }
             )
         if not longest_functions:
             print("No functions found")
             return
-        print("Top 1 cummulatively longest functions:")
+        print("Top 10 longest functions (total):")
         print(tabulate(longest_functions, headers="keys"))
         print()
 
@@ -693,15 +716,16 @@ class Analyzer:
                 continue
             longest_functions_per_call.append(
                 {
-                    "percent": f"{stats.spent / totaltime * 100:g}",
-                    "spent_us": stats.spent,
-                    "func": dots_trim(str(func)),
+                    "%": f"{stats.spent / totaltime * 100:g}",
+                    "incl": stats.spent,
+                    "excl": stats.spent_exclusive,
+                    "func": dots_trim(str(func), width=40),
                     "calls": stats.calls,
-                    "spentPerCall": f"{stats.spent / stats.calls:g}",
-                    "example": stats.get_example(),
+                    "spent/call": f"{stats.spent / stats.calls:g}",
+                    "location": stats.get_example(),
                 }
             )
-        print("Top 1 cummulatively longest functions per call:")
+        print("Top 10 longest functions (per call):")
         print(tabulate(longest_functions_per_call, headers="keys"))
         print()
 
