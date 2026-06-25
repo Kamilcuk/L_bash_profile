@@ -13,7 +13,7 @@ import click
 import clickdc
 from tabulate import tabulate
 
-from .common import qemu_output_drain_fifo
+from .common import bash_cmd, bash_cmd_env, qemu_output_drain_fifo
 
 COMPARE_METHODS = {
     "TIME": r"""
@@ -24,20 +24,25 @@ time {{
 {script}
 }}
 {repeat_end}
+{suffix}
 """,
     "QEMU": r"""
+kill -0 $$
+kill -0 $$; kill -0 $$
 {before}
 {repeat_start}
-echo S >&{fd}
+kill -0 $$
 {script}
-echo E >&{fd}
+kill -0 $$
 {repeat_end}
+{suffix}
 """,
     "PERF": r"""
 {before}
 {repeat_start}
 {script}
 {repeat_end}
+{suffix}
 """,
 }
 
@@ -49,6 +54,12 @@ class CompareArgs:
         "--prefix",
         default="",
         help="Common prefix to run before each code snippet.",
+    )
+    suffix: str = clickdc.option(
+        "-S",
+        "--suffix",
+        default="",
+        help="Common suffix to run after each code snippet.",
     )
     method: str = clickdc.option(
         "-m",
@@ -65,6 +76,9 @@ class CompareArgs:
     )
     perf: bool = clickdc.option(
         "--perf", is_flag=True, help="Shortcut for --method PERF."
+    )
+    json: bool = clickdc.option(
+        "-j", "--json", is_flag=True, help="Output comparison results as JSON."
     )
     codes: Tuple[str, ...] = clickdc.argument(nargs=-1)
 
@@ -83,10 +97,11 @@ def _run_compare_snippet(
     repeat_end = "done"
 
     before_cmd = args.prefix
+    suffix_cmd = args.suffix
     script_template = COMPARE_METHODS[method]
 
     if method == "QEMU":
-        return _run_qemu(script_template, before_cmd, code, repeat_start, repeat_end)
+        return _run_qemu(script_template, before_cmd, suffix_cmd, code, repeat_start, repeat_end)
     else:
         marker = str(uuid.uuid4())
         script = script_template.format(
@@ -95,6 +110,7 @@ def _run_compare_snippet(
             repeat_start=repeat_start,
             repeat_end=repeat_end,
             marker=marker,
+            suffix=suffix_cmd,
         )
         if method == "PERF":
             return _run_perf(script)
@@ -102,7 +118,7 @@ def _run_compare_snippet(
             return _run_time(script, marker)
 
 
-def _run_qemu(template, before, script_code, repeat_start, repeat_end) -> List[float]:
+def _run_qemu(template, before, suffix, script_code, repeat_start, repeat_end) -> List[float]:
     with tempfile.TemporaryDirectory() as tmpdir:
         fifo = os.path.join(tmpdir, "fifo")
         os.mkfifo(fifo)
@@ -121,21 +137,22 @@ def _run_qemu(template, before, script_code, repeat_start, repeat_end) -> List[f
                 repeat_start=repeat_start,
                 repeat_end=repeat_end,
                 fd=fifo_fd,
+                suffix=suffix,
             )
             cmd = [
                 "qemu-x86_64",
                 "-one-insn-per-tb",
                 "-d",
-                "exec",
+                "exec,strace",
                 "-D",
                 fifo,
-                "/bin/bash",
+                *bash_cmd(),
                 "-c",
                 full_script,
                 "bash",
                 "/dev/null",
             ]
-            subprocess.run(cmd, pass_fds=[fifo_fd], capture_output=True)
+            subprocess.run(cmd, pass_fds=[fifo_fd], capture_output=True, env=bash_cmd_env())
         finally:
             os.close(fifo_fd)
             drain_thread.join()
@@ -155,8 +172,8 @@ def _run_qemu(template, before, script_code, repeat_start, repeat_end) -> List[f
 
 def _run_time(script: str, marker: str) -> List[Dict[str, float]]:
     samples = []
-    cmd = ["bash", "-c", script, "bash"]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    cmd = [*bash_cmd(), "-c", script, "bash"]
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=bash_cmd_env())
     # Bash 'time' output goes to stderr
     for line in proc.stderr.splitlines():
         if line.startswith(marker + " "):
@@ -184,13 +201,13 @@ def _run_perf(script: str) -> float:
         "-e",
         "instructions",
         "--",
-        "bash",
+        *bash_cmd(),
         "-c",
         script,
         "bash",
         "/dev/null",
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=bash_cmd_env())
     # Parse perf output (stderr)
     for line in proc.stderr.splitlines():
         if "instructions" in line:
@@ -219,7 +236,7 @@ def compare_cmd(args: CompareArgs):
         )
 
     results = []
-    baseline_avg_real = None
+    previous_avg_real = None
 
     for i, code in enumerate(args.codes):
         print(
@@ -257,17 +274,15 @@ def compare_cmd(args: CompareArgs):
             avg_user = avg_sys = stddev_real = stddev_user = stddev_sys = 0
             total_real = data
 
-        if i == 0:
-            baseline_avg_real = avg_real
-
-        diff = avg_real - baseline_avg_real
+        diff = 0 if i == 0 else avg_real - previous_avg_real
+        previous_avg_real = avg_real
 
         res = {"Code": code if code else "''"}
         if method == "QEMU":
-            res["Insn"] = f"{avg_real:.2f}"
-            res["ΔInsn"] = f"{diff:+.2f}" if i > 0 else "-"
+            res["Insn"] = f"{avg_real:.0f}"
+            res["ΔInsn"] = f"{diff:+.0f}" if i > 0 else "-"
             if args.repeat > 1:
-                res["±Insn"] = f"{stddev_real:.2f}"
+                res["±Insn"] = f"{stddev_real:.0f}"
                 res["Total"] = int(total_real)
         else:
             res["Real(s)"] = f"{avg_real:.6f}"
@@ -279,6 +294,11 @@ def compare_cmd(args: CompareArgs):
             res["±Sys"] = f"{stddev_sys:.6f}"
 
         results.append(res)
+
+    if args.json:
+        import json
+        print(json.dumps(results, indent=2))
+        return
 
     print(f"Comparison results (method: {method}, repeat: {args.repeat}):")
     print(tabulate(results, headers="keys", tablefmt="github", disable_numparse=True))

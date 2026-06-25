@@ -30,6 +30,8 @@ from . import color
 from .common import (
     click_help,
     qemu_output_drain_fifo,
+    bash_cmd,
+    bash_cmd_env,
 )
 from .compare import CompareArgs, compare_cmd
 
@@ -251,6 +253,9 @@ class AnalyzeArgs:
     dumprecords: Optional[str] = clickdc.option(
         help="Dump callgraph in text format to a file command by command, call by call.",
     )
+    json: Optional[bool] = clickdc.option(
+        "-j", "--json", is_flag=True, help="Output analysis results as JSON to stdout."
+    )
 
     treelimit: Optional[int] = clickdc.option(
         default=3,
@@ -377,9 +382,10 @@ trap 'printf -v "_L_bash_profile_var[${#_L_bash_profile_var[@]}]" "# %s %s %s %s
 printf "%s\n" "${_L_bash_profile_var[@]}" >"$_L_bash_profile_file"
 """,
     "QEMU": r"""
+kill -0 $$; kill -0 $$
 set -T
 %BEFORE%
-trap 'printf "# %s %s %s %s %q %q %q\n" "0" "${BASHPID:-${BASH_SUBSHELL:-$$}}" "${#BASH_SOURCE[@]}" "${LINENO:-0}" "${BASH_SOURCE[0]:-<}" "${FUNCNAME[0]:->}" "$BASH_COMMAND" >&%FD%' DEBUG
+trap 'kill -0 $$; printf "# %s %s %s %s %q %q %q\n" "0" "${BASHPID:-${BASH_SUBSHELL:-$$}}" "${#BASH_SOURCE[@]}" "${LINENO:-0}" "${BASH_SOURCE[0]:-<}" "${FUNCNAME[0]:->}" "$BASH_COMMAND" >&%FD%; kill -0 $$' DEBUG
 %SCRIPT%
 : END
 """,
@@ -457,6 +463,39 @@ class Analyzer:
             self.read()
         with self.timeit("Calculating traces and time spent"):
             self.calculate_records_spent_time()
+
+        if self.args.json:
+            import json
+            data = {
+                "total_time": self.get_callgraph.totaltime,
+                "commands": [
+                    {
+                        "cmd": cmd,
+                        "spent": stats.spent,
+                        "calls": len(stats.records),
+                        "callers": dict(stats.callers),
+                    }
+                    for cmd, stats in sorted(
+                        self.commands.items(), key=lambda x: x[1].spent, reverse=True
+                    )
+                ],
+                "functions": [
+                    {
+                        "filename": func.filename,
+                        "lineno": func.lineno,
+                        "funcname": func.funcname,
+                        "calls": stats.calls,
+                        "spent": stats.spent,
+                        "spent_exclusive": stats.spent_exclusive,
+                    }
+                    for func, stats in sorted(
+                        self.functions.items(), key=lambda x: x[1].spent, reverse=True
+                    )
+                ],
+            }
+            print(json.dumps(data, indent=2))
+            return
+
         with self.timeit("Getting longest commands"):
             self.print_top_longest_commands()
         with self.timeit("Getting longest functions"):
@@ -917,7 +956,7 @@ def _profile(args: ProfileArgs):
         .replace("%BEFORE%", args.before)
         .replace("%SCRIPT%", script)
     )
-    cmd = ["bash", "-c", script, "bash", profilefile, *args.args]
+    cmd = [*bash_cmd(), "-c", script, "bash", profilefile, *args.args]
     if args.method in ["4", "QEMU"]:
         with tempfile.TemporaryDirectory() as tmpdir:
             fifo = os.path.join(tmpdir, "fifo")
@@ -937,10 +976,10 @@ def _profile(args: ProfileArgs):
                     "qemu-x86_64",
                     "-one-insn-per-tb",
                     "-d",
-                    "exec",
+                    "exec,strace",
                     "-D",
                     fifo,
-                    "/bin/bash",
+                    *bash_cmd(),
                     "-c",
                     script,
                     "bash",
@@ -956,7 +995,7 @@ def _profile(args: ProfileArgs):
                     f"PROFILING: {shlex.quote(args.script)} to {profilefile}",
                     file=sys.stderr,
                 )
-                subprocess.run(cmd, pass_fds=[fifo_fd])
+                subprocess.run(cmd, pass_fds=[fifo_fd], env=bash_cmd_env())
             finally:
                 os.close(fifo_fd)
                 drain_thread.join()
@@ -967,7 +1006,7 @@ def _profile(args: ProfileArgs):
         print(
             f"PROFILING: {shlex.quote(args.script)} to {profilefile}", file=sys.stderr
         )
-        subprocess.run(cmd)
+        subprocess.run(cmd, env=bash_cmd_env())
 
     print(f"PROFING ENDED, output in {profilefile}", file=sys.stderr)
 

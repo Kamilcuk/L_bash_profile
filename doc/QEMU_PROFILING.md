@@ -26,10 +26,16 @@ Because QEMU executes the guest's `write()` system calls, it is able to interlea
 
 ## Implementation Details
 
+### Warm Calibration and Dual-Kill Boundary Subtraction
+To achieve instruction-level precision down to a single instruction, `L_bash_profile` uses a dual-kill boundary technique:
+1. **Calibration:** On startup, the profiler triggers three sequential `kill -0 $$` system calls. The first call warms up the builtin and resolves any lazy symbol bindings. The difference in CPU instructions between the second and third calls establishes `kill_overhead`, representing the baseline cost of executing a single `kill -0 $$` builtin command.
+2. **Measurement:** For each code snippet (or command in `profile` mode), boundary markers are established using `kill -0 $$`.
+3. **Overhead Subtraction:** The instruction counts of the boundary `kill` system calls are matched sequentially. The dynamic `kill_overhead` is subtracted from the delta to yield the pure, isolated execution cost of the target script snippet.
+
 ### The QEMU Command
 ```bash
-qemu-x86_64 -one-insn-per-tb -d exec -D /tmp/profile_fifo \
-  /bin/bash -c 'trap "echo MARKER: \$BASH_COMMAND >&9" DEBUG; source script.sh' 9>/tmp/profile_fifo
+qemu-x86_64 -one-insn-per-tb -d exec,strace -D /tmp/profile_fifo \
+  bash --norc --noprofile -c 'kill -0 $$; kill -0 $$; ...'
 ```
 
 ### Baseline Costs (Approximate)

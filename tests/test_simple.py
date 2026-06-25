@@ -36,3 +36,59 @@ def test_qemu():
 
 def test_run():
     run("L_bash_profile run --qemu --callstatscmds 'f() { :; }; f'")
+
+
+def test_compare():
+    run("L_bash_profile compare --prefix 'a=1' --suffix 'echo $a' 'a=2'")
+    run("L_bash_profile compare --qemu --prefix 'a=1' --suffix 'echo $a' 'a=2'")
+
+
+def test_compare_sanity():
+    # Run compare and capture output
+    cmd = shlex.split("L_bash_profile compare -m qemu '' 'a=1'")
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    stdout = proc.stdout
+    print(stdout)
+    
+    # Parse the Insn values
+    lines = [line.strip() for line in stdout.splitlines() if "|" in line]
+    data_lines = [l for l in lines if "Code" not in l and "---" not in l]
+    
+    assert len(data_lines) == 2
+    
+    parts_empty = [p.strip() for p in data_lines[0].split("|") if p.strip()]
+    parts_a1 = [p.strip() for p in data_lines[1].split("|") if p.strip()]
+    
+    empty_insn = int(parts_empty[1])
+    a1_insn = int(parts_a1[1])
+    
+    print(f"Parsed empty_insn: {empty_insn}, a1_insn: {a1_insn}")
+    
+    assert empty_insn >= 0
+    assert a1_insn > empty_insn
+    assert a1_insn > 1000
+
+
+def test_json_output():
+    import json
+    # Test L_bash_profile run --json
+    cmd = shlex.split("L_bash_profile run --json 'f() { :; }; f'")
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    data = json.loads(proc.stdout)
+    assert "total_time" in data
+    assert "commands" in data
+    assert "functions" in data
+    assert any(f["funcname"] == "f" for f in data["functions"])
+
+    # Test L_bash_profile compare --json
+    cmd_compare = shlex.split("L_bash_profile compare --qemu --json '' 'a=1'")
+    proc_compare = subprocess.run(cmd_compare, capture_output=True, text=True, check=True)
+    data_compare = json.loads(proc_compare.stdout)
+    assert len(data_compare) == 2
+    assert data_compare[0]["Code"] == "''"
+    assert "Insn" in data_compare[0]
+
+
+def test_subprocess_kill():
+    # Spawns a background sleep, checks if alive with kill -0, kills it, and waits on it
+    run("L_bash_profile run --qemu --callstatscmds 'sleep 10 & sub_pid=$!; kill -0 $sub_pid; kill $sub_pid; wait $sub_pid 2>/dev/null || true'")

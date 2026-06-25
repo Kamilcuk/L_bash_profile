@@ -11,6 +11,7 @@
     - **Top Longest Functions:** Identify the slowest functions.
     - **Call Graphs:** Visualize the execution flow with `dot` call graphs.
     - **Python-like Profiling:** Generate `pstats` files compatible with Python's profiling ecosystem (e.g., `snakeviz`).
+    - **Structured JSON Export:** Output detailed analysis or comparison results in machine-readable JSON format to stdout with `-j` / `--json`.
 - **Easy to Use:** Simple and intuitive command-line interface.
 
 ## Installation
@@ -49,6 +50,14 @@ Profiles and analyzes a Bash script in one go. This is a convenient shortcut tha
 
 ```bash
 $ L_bash_profile run --qemu --callstatscmds 'f() { :; }; f'
+```
+
+### `compare`
+Compares the performance of multiple Bash code snippets. It runs the snippets and presents a comparison table.
+Supports `--qemu` for deterministic, warm-calibrated instruction counts, `--prefix` to set up initial state, and `--suffix` / `-S` to execute a common command after each snippet.
+
+```bash
+$ L_bash_profile compare --qemu --prefix 'a=1' '' 'a=2'
 ```
 
 ### `profile`
