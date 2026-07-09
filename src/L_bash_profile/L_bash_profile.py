@@ -226,6 +226,14 @@ class CallgraphNode:
             self.parent.strtree() + "->" if self.parent else ""
         ) + f"{self.function}"
 
+    @property
+    def children(self) -> dict[FunctionKey, "CallgraphNode"]:
+        res: dict[FunctionKey, "CallgraphNode"] = {}
+        for rr in self.records:
+            if isinstance(rr, CallgraphNode):
+                res[rr.function] = rr
+        return res
+
 
 @dataclass
 class AnalyzeArgs:

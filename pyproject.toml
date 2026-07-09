@@ -23,6 +23,9 @@ dependencies = [
 test = [
     "pytest",
 ]
+pyright = [
+    "basedpyright",
+]
 
 [project.urls]
 "Homepage" = "https://github.com/kamilcuk/L_bash_profile"

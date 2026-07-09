@@ -6,8 +6,10 @@ import sys
 import tempfile
 import threading
 import uuid
+from enum import Enum
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
+from concurrent.futures import ProcessPoolExecutor
 
 import click
 import clickdc
@@ -15,8 +17,9 @@ from tabulate import tabulate
 
 from .common import bash_cmd, bash_cmd_env, qemu_output_drain_fifo
 
-COMPARE_METHODS = {
-    "TIME": r"""
+
+class Method(Enum):
+    TIME = r"""
 {before}
 export TIMEFORMAT='{marker} %6R %6U %6S'
 {repeat_start}
@@ -25,8 +28,8 @@ time {{
 }}
 {repeat_end}
 {suffix}
-""",
-    "QEMU": r"""
+"""
+    QEMU = r"""
 kill -0 $$
 kill -0 $$; kill -0 $$
 {before}
@@ -36,15 +39,14 @@ kill -0 $$
 kill -0 $$
 {repeat_end}
 {suffix}
-""",
-    "PERF": r"""
+"""
+    PERF = r"""
 {before}
 {repeat_start}
 {script}
 {repeat_end}
 {suffix}
-""",
-}
+"""
 
 
 @dataclass
@@ -53,19 +55,22 @@ class CompareArgs:
         "-P",
         "--prefix",
         default="",
+        show_default=True,
         help="Common prefix to run before each code snippet.",
     )
     suffix: str = clickdc.option(
         "-S",
         "--suffix",
         default="",
+        show_default=True,
         help="Common suffix to run after each code snippet.",
     )
-    method: str = clickdc.option(
+    method: Method = clickdc.option(
         "-m",
         "--method",
-        default="TIME",
-        type=click.Choice(list(COMPARE_METHODS.keys()), case_sensitive=False),
+        default=Method.TIME,
+        type=click.Choice(Method, case_sensitive=False),
+        show_default=True,
         help="Comparison method: TIME (wall-clock), QEMU (instruction count), PERF (linux perf).",
     )
     repeat: int = clickdc.option(
@@ -73,6 +78,7 @@ class CompareArgs:
         "--repeat",
         default=1,
         required=False,
+        show_default=True,
         help="Repeat the script n times inside a loop. Do not use in QEMU mode (deterministic).",
     )
     qemu: bool = clickdc.option(
@@ -87,25 +93,52 @@ class CompareArgs:
     codes: Tuple[str, ...] = clickdc.argument(nargs=-1)
 
 
-def _run_compare_snippet(
-    args: CompareArgs, code: str
-) -> Union[float, List[float], List[Dict[str, float]]]:
-    method = args.method.upper()
-    if args.qemu:
-        method = "QEMU"
-    if args.perf:
-        method = "PERF"
+@dataclass
+class QemuResult:
+    samples: List[float]
 
-    # Handle repeat logic: Always use a loop for consistency (warm vs cold parsing)
-    repeat_start = f"for ((_i=0; _i<{args.repeat}; _i++)); do"
-    repeat_end = "done"
+
+@dataclass
+class PerfResult:
+    instructions: float
+
+
+@dataclass
+class TimeSample:
+    real: float
+    user: float
+    sys: float
+
+
+@dataclass
+class TimeResult:
+    samples: List[TimeSample]
+
+
+def _run_compare_snippet(
+    i: int, args: CompareArgs, code: str
+) -> Union[QemuResult, PerfResult, TimeResult]:
+    print(
+        f"Benchmarking {i + 1}/{len(args.codes)}: {shlex.quote(code)}",
+        file=sys.stderr,
+    )
+
+    # Handle repeat logic
+    if args.repeat <= 1:
+        repeat_start = ""
+        repeat_end = ""
+    else:
+        repeat_start = f"for ((_i=0; _i<{args.repeat}; _i++)); do"
+        repeat_end = "done"
 
     before_cmd = args.prefix
     suffix_cmd = args.suffix
-    script_template = COMPARE_METHODS[method]
+    script_template = args.method.value
 
-    if method == "QEMU":
-        return _run_qemu(script_template, before_cmd, suffix_cmd, code, repeat_start, repeat_end)
+    if args.method == Method.QEMU:
+        return _run_qemu(
+            script_template, before_cmd, suffix_cmd, code, repeat_start, repeat_end
+        )
     else:
         marker = str(uuid.uuid4())
         script = script_template.format(
@@ -116,13 +149,20 @@ def _run_compare_snippet(
             marker=marker,
             suffix=suffix_cmd,
         )
-        if method == "PERF":
+        if args.method == Method.PERF:
             return _run_perf(script)
         else:  # TIME
             return _run_time(script, marker)
 
 
-def _run_qemu(template, before, suffix, script_code, repeat_start, repeat_end) -> List[float]:
+def _run_qemu(
+    template: str,
+    before: str,
+    suffix: str,
+    script_code: str,
+    repeat_start: str,
+    repeat_end: str,
+) -> QemuResult:
     with tempfile.TemporaryDirectory() as tmpdir:
         fifo = os.path.join(tmpdir, "fifo")
         os.mkfifo(fifo)
@@ -156,7 +196,9 @@ def _run_qemu(template, before, suffix, script_code, repeat_start, repeat_end) -
                 "bash",
                 "/dev/null",
             ]
-            subprocess.run(cmd, pass_fds=[fifo_fd], capture_output=True, env=bash_cmd_env())
+            subprocess.run(
+                cmd, pass_fds=[fifo_fd], capture_output=True, env=bash_cmd_env()
+            )
         finally:
             os.close(fifo_fd)
             drain_thread.join()
@@ -171,10 +213,10 @@ def _run_qemu(template, before, suffix, script_code, repeat_start, repeat_end) -
                 elif line.startswith("STOP ") and last_start is not None:
                     samples.append(float(int(line.split(" ")[1]) - last_start))
                     last_start = None
-        return samples
+        return QemuResult(samples=samples)
 
 
-def _run_time(script: str, marker: str) -> List[Dict[str, float]]:
+def _run_time(script: str, marker: str) -> TimeResult:
     samples = []
     cmd = [*bash_cmd(), "-c", script, "bash"]
     proc = subprocess.run(cmd, capture_output=True, text=True, env=bash_cmd_env())
@@ -186,18 +228,18 @@ def _run_time(script: str, marker: str) -> List[Dict[str, float]]:
                 try:
                     # Capture real, user, system in seconds
                     samples.append(
-                        {
-                            "real": float(parts[1]),
-                            "user": float(parts[2]),
-                            "sys": float(parts[3]),
-                        }
+                        TimeSample(
+                            real=float(parts[1]),
+                            user=float(parts[2]),
+                            sys=float(parts[3]),
+                        )
                     )
                 except ValueError:
                     continue
-    return samples
+    return TimeResult(samples=samples)
 
 
-def _run_perf(script: str) -> float:
+def _run_perf(script: str) -> PerfResult:
     # perf stat -e instructions bash -c ...
     cmd = [
         "perf",
@@ -218,71 +260,95 @@ def _run_perf(script: str) -> float:
             # Example line: "         1,234,567      instructions              #    0.50  insn per cycle"
             parts = line.strip().split()
             if parts:
-                return float(parts[0].replace(",", "").replace(".", ""))
-    return 0.0
+                return PerfResult(
+                    instructions=float(parts[0].replace(",", "").replace(".", ""))
+                )
+    return PerfResult(instructions=0.0)
 
 
-def compare_cmd(args: CompareArgs):
+class SequentialExecutor:
+    def __enter__(self) -> "SequentialExecutor":
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        pass
+
+    def map(self, fn: Any, *iterables: Any) -> Any:
+        return map(fn, *iterables)
+
+
+def compare_cmd(args: CompareArgs) -> None:
     if not args.codes:
         print("Error: No code snippets provided.", file=sys.stderr)
         return
 
-    method = args.method.upper()
     if args.qemu:
-        method = "QEMU"
+        args.method = Method.QEMU
     if args.perf:
-        method = "PERF"
+        args.method = Method.PERF
 
-    if method == "QEMU" and args.repeat > 1:
+    if args.method == Method.QEMU and args.repeat > 1:
         print(
             "Warning: QEMU mode is deterministic. Using --repeat is highly discouraged as it adds redundant overhead.",
             file=sys.stderr,
         )
 
-    results = []
-    previous_avg_real = None
-
-    for i, code in enumerate(args.codes):
-        print(
-            f"Benchmarking {i + 1}/{len(args.codes)}: {shlex.quote(code)}",
-            file=sys.stderr,
+    executor = (
+        ProcessPoolExecutor() if args.method == Method.QEMU else SequentialExecutor()
+    )
+    with executor:
+        datas = list(
+            executor.map(
+                _run_compare_snippet,
+                range(len(args.codes)),
+                [args] * len(args.codes),
+                args.codes,
+            )
         )
-        data = _run_compare_snippet(args, code)
 
-        if isinstance(data, list):
-            # Statistical processing for multiple samples (TIME, QEMU)
-            if data and isinstance(data[0], dict):
-                # TIME data
-                reals = [s["real"] for s in data]
-                users = [s["user"] for s in data]
-                syss = [s["sys"] for s in data]
+    results: List[Dict[str, Union[float, str]]] = []
+    previous_avg_real = None
+    for i, (code, data) in enumerate(zip(args.codes, datas)):
+        avg_real: float
+        if isinstance(data, TimeResult):
+            # TIME data
+            reals = [s.real for s in data.samples]
+            users = [s.user for s in data.samples]
+            syss = [s.sys for s in data.samples]
 
-                avg_real = statistics.mean(reals) if reals else 0
-                avg_user = statistics.mean(users) if users else 0
-                avg_sys = statistics.mean(syss) if syss else 0
+            avg_real = statistics.mean(reals) if reals else 0
+            avg_user = statistics.mean(users) if users else 0
+            avg_sys = statistics.mean(syss) if syss else 0
 
-                stddev_real = statistics.stdev(reals) if len(reals) > 1 else 0
-                stddev_user = statistics.stdev(users) if len(users) > 1 else 0
-                stddev_sys = statistics.stdev(syss) if len(syss) > 1 else 0
-                total_real = sum(reals)
-            else:
-                # QEMU data (list of floats)
-                avg_real = statistics.mean(data) if data else 0
-                avg_user = avg_sys = 0
-                stddev_real = statistics.stdev(data) if len(data) > 1 else 0
-                stddev_user = stddev_sys = 0
-                total_real = sum(data)
-        else:
+            stddev_real = statistics.stdev(reals) if len(reals) > 1 else 0
+            stddev_user = statistics.stdev(users) if len(users) > 1 else 0
+            stddev_sys = statistics.stdev(syss) if len(syss) > 1 else 0
+            total_real = sum(reals)
+        elif isinstance(data, QemuResult):
+            # QEMU data (list of floats)
+            avg_real = statistics.mean(data.samples) if data.samples else 0
+            avg_user = avg_sys = 0
+            stddev_real = statistics.stdev(data.samples) if len(data.samples) > 1 else 0
+            stddev_user = stddev_sys = 0
+            total_real = sum(data.samples)
+        elif isinstance(data, PerfResult):
             # Aggregate processing (PERF)
-            avg_real = data / args.repeat if args.repeat > 0 else data
+            avg_real = (
+                data.instructions / args.repeat
+                if args.repeat > 0
+                else data.instructions
+            )
             avg_user = avg_sys = stddev_real = stddev_user = stddev_sys = 0
-            total_real = data
+            total_real = data.instructions
+        else:
+            avg_real = avg_user = avg_sys = stddev_real = stddev_user = stddev_sys = 0
+            total_real = 0
 
-        diff = 0 if i == 0 else avg_real - previous_avg_real
+        diff = 0 if previous_avg_real is None else avg_real - previous_avg_real
         previous_avg_real = avg_real
 
-        res = {"Code": code if code else "''"}
-        if method == "QEMU":
+        res: Dict[str, Union[float, str]] = {"Code": code if code else "''"}
+        if args.method == Method.QEMU:
             res["Insn"] = f"{avg_real:.0f}"
             res["ΔInsn"] = f"{diff:+.0f}" if i > 0 else "-"
             if args.repeat > 1:
@@ -301,8 +367,9 @@ def compare_cmd(args: CompareArgs):
 
     if args.json:
         import json
+
         print(json.dumps(results, indent=2))
         return
 
-    print(f"Comparison results (method: {method}, repeat: {args.repeat}):")
+    print(f"Comparison results (method: {args.method.name}, repeat: {args.repeat}):")
     print(tabulate(results, headers="keys", tablefmt="github", disable_numparse=True))
