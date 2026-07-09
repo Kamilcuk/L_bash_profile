@@ -96,11 +96,13 @@ class CompareArgs:
 @dataclass
 class QemuResult:
     samples: List[float]
+    exit_code: int
 
 
 @dataclass
 class PerfResult:
     instructions: float
+    exit_code: int
 
 
 @dataclass
@@ -113,6 +115,7 @@ class TimeSample:
 @dataclass
 class TimeResult:
     samples: List[TimeSample]
+    exit_code: int
 
 
 def _run_compare_snippet(
@@ -174,6 +177,7 @@ def _run_qemu(
         drain_thread.start()
 
         fifo_fd = os.open(fifo, os.O_WRONLY)
+        exit_code = 0
         try:
             full_script = template.format(
                 before=before,
@@ -196,9 +200,10 @@ def _run_qemu(
                 "bash",
                 "/dev/null",
             ]
-            subprocess.run(
+            proc = subprocess.run(
                 cmd, pass_fds=[fifo_fd], capture_output=True, env=bash_cmd_env()
             )
+            exit_code = proc.returncode
         finally:
             os.close(fifo_fd)
             drain_thread.join()
@@ -213,7 +218,7 @@ def _run_qemu(
                 elif line.startswith("STOP ") and last_start is not None:
                     samples.append(float(int(line.split(" ")[1]) - last_start))
                     last_start = None
-        return QemuResult(samples=samples)
+        return QemuResult(samples=samples, exit_code=exit_code)
 
 
 def _run_time(script: str, marker: str) -> TimeResult:
@@ -236,7 +241,7 @@ def _run_time(script: str, marker: str) -> TimeResult:
                     )
                 except ValueError:
                     continue
-    return TimeResult(samples=samples)
+    return TimeResult(samples=samples, exit_code=proc.returncode)
 
 
 def _run_perf(script: str) -> PerfResult:
@@ -261,9 +266,10 @@ def _run_perf(script: str) -> PerfResult:
             parts = line.strip().split()
             if parts:
                 return PerfResult(
-                    instructions=float(parts[0].replace(",", "").replace(".", ""))
+                    instructions=float(parts[0].replace(",", "").replace(".", "")),
+                    exit_code=proc.returncode,
                 )
-    return PerfResult(instructions=0.0)
+    return PerfResult(instructions=0.0, exit_code=proc.returncode)
 
 
 class SequentialExecutor:
@@ -306,7 +312,7 @@ def compare_cmd(args: CompareArgs) -> None:
             )
         )
 
-    results: List[Dict[str, Union[float, str]]] = []
+    results: List[Dict[str, Union[float, str, int]]] = []
     previous_avg_real = None
     for i, (code, data) in enumerate(zip(args.codes, datas)):
         avg_real: float
@@ -347,7 +353,11 @@ def compare_cmd(args: CompareArgs) -> None:
         diff = 0 if previous_avg_real is None else avg_real - previous_avg_real
         previous_avg_real = avg_real
 
-        res: Dict[str, Union[float, str]] = {"Code": code if code else "''"}
+        exit_code = getattr(data, "exit_code", 0)
+        res: Dict[str, Union[float, str, int]] = {
+            "Code": code if code else "''",
+            "ExitCode": exit_code,
+        }
         if args.method == Method.QEMU:
             res["Insn"] = f"{avg_real:.0f}"
             res["ΔInsn"] = f"{diff:+.0f}" if i > 0 else "-"

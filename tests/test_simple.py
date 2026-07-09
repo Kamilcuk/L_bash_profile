@@ -59,8 +59,11 @@ def test_compare_sanity():
     parts_empty = [p.strip() for p in data_lines[0].split("|") if p.strip()]
     parts_a1 = [p.strip() for p in data_lines[1].split("|") if p.strip()]
     
-    empty_insn = int(parts_empty[1])
-    a1_insn = int(parts_a1[1])
+    assert parts_empty[1] == "0"
+    assert parts_a1[1] == "0"
+    
+    empty_insn = int(parts_empty[2])
+    a1_insn = int(parts_a1[2])
     
     print(f"Parsed empty_insn: {empty_insn}, a1_insn: {a1_insn}")
     
@@ -86,7 +89,21 @@ def test_json_output():
     data_compare = json.loads(proc_compare.stdout)
     assert len(data_compare) == 2
     assert data_compare[0]["Code"] == "''"
+    assert "ExitCode" in data_compare[0]
+    assert data_compare[0]["ExitCode"] == 0
     assert "Insn" in data_compare[0]
+
+
+def test_compare_exit_codes():
+    import json
+    cmd = shlex.split("L_bash_profile compare --json 'exit 0' 'exit 42'")
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    data = json.loads(proc.stdout)
+    assert len(data) == 2
+    assert data[0]["Code"] == "exit 0"
+    assert data[0]["ExitCode"] == 0
+    assert data[1]["Code"] == "exit 42"
+    assert data[1]["ExitCode"] == 42
 
 
 def test_subprocess_kill():
