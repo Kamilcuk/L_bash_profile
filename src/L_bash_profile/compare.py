@@ -69,7 +69,11 @@ class CompareArgs:
         help="Comparison method: TIME (wall-clock), QEMU (instruction count), PERF (linux perf).",
     )
     repeat: int = clickdc.option(
-        "-r", "--repeat", default=1, help="Repeat the script n times inside a loop."
+        "-r",
+        "--repeat",
+        default=1,
+        required=False,
+        help="Repeat the script n times inside a loop. Do not use in QEMU mode (deterministic).",
     )
     qemu: bool = clickdc.option(
         "--qemu", is_flag=True, help="Shortcut for --method QEMU."
@@ -231,7 +235,7 @@ def compare_cmd(args: CompareArgs):
 
     if method == "QEMU" and args.repeat > 1:
         print(
-            "Warning: QEMU method is deterministic, --repeat might be redundant.",
+            "Warning: QEMU mode is deterministic. Using --repeat is highly discouraged as it adds redundant overhead.",
             file=sys.stderr,
         )
 

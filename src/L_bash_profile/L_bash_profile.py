@@ -1029,6 +1029,20 @@ def cli():
     help="""
 Compare the performance of multiple Bash code snippets.
 """,
+    epilog="""
+\b
+Examples:
+  # Compare the performance of two different commands
+  L_bash_profile compare 'echo "hello"' 'printf "hello\\n"'
+
+\b
+  # Compare performance using QEMU instruction count method with a common prefix
+  L_bash_profile compare --qemu --prefix 'x=0' '((x++))' 'let x++' 'x=$((x+1))'
+
+\b
+  # Compare performance using wall-clock time and repeating each snippet 1000 times
+  L_bash_profile compare --repeat 1000 'sleep 0.001' 'sleep 0.002'
+""",
 )
 @click_help()
 @clickdc.adddc("args", CompareArgs)
@@ -1049,9 +1063,11 @@ Examples:
   # Profile a simple command and analyze the output
   L_bash_profile profile -n10 'echo "hello world"' | L_bash_profile analyze
 
+\b
   # Profile a more complex script with a variable
   L_bash_profile profile -n200 -b i=0 '((i)); [[ $i ]];' | L_bash_profile analyze
 
+\b
   # Profile a script with functions
   L_bash_profile profile -n500 -b 'f() { "$@"; }; g() { "$@"; }; i=1' 'f eval "(($i))"; g test "$i" = 0;' | L_bash_profile analyze
 """,
@@ -1161,6 +1177,7 @@ Example:
     --callstatscmds \\
     --dotlimit 3
 
+\b
   # Real-world example: Profiling L_lib.sh
   L_bash_profile profile -o profile.txt 'export L_UNITTEST_UNSET_X=0; . ../L_lib/bin/L_lib.sh test' -m XTRACE
   L_bash_profile analyze profile.txt --filterfunction L_argparse --dotlimit 6
