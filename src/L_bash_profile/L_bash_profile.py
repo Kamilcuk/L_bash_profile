@@ -810,15 +810,17 @@ class Analyzer:
                 aggs = aggs[: self.args.treelimit]
 
             for i, (func, total, group) in enumerate(aggs):
-                p = color.pct(f"{total / parent_total * 100:.1f}%")
+                p = color.pct(f"{total / parent_total * 100:.1f}%") if parent_total > 0 else color.pct("N/A%")
                 unit = "ins" if self.args.qemu else "us"
                 stats = f" ({len(group)} calls, avg {color.time(int(statistics.mean(c.totaltime for c in group)))}{unit}, stddev {color.time(int(statistics.pstdev(c.totaltime for c in group)))}{unit})" if len(group) > 1 else ""
-                
+
                 last = i == len(aggs) - 1
                 print(f"{prefix}{'└── ' if last else '├── '}{color.func(str(func))} {color.time(total)}{unit} {p}{stats}")
-                
+
                 # Recurse into the first child as representative for subtree structure
-                render(group[0], total, prefix + ("    " if last else "│   "), True)
+                # Only recurse if there's meaningful time to show
+                if total > 0:
+                    render(group[0], total, prefix + ("    " if last else "│   "), True)
 
         print(click.style(f"Call Tree{f' (top {self.args.treelimit} children)' if self.args.treelimit else ''}:", bold=True))
         if root_node.function.funcname:
@@ -950,7 +952,7 @@ class ProfileArgs:
     args: tuple[str, ...] = clickdc.argument(nargs=-1)
 
 
-def _profile(args: ProfileArgs):
+def _profile(args: ProfileArgs, quiet: bool = False):
     if args.qemu:
         args.method = "QEMU"
     profilefile = (
@@ -1003,7 +1005,9 @@ def _profile(args: ProfileArgs):
                     f"PROFILING: {shlex.quote(args.script)} to {profilefile}",
                     file=sys.stderr,
                 )
-                subprocess.run(cmd, pass_fds=[fifo_fd], env=bash_cmd_env())
+                subprocess.run(cmd, pass_fds=[fifo_fd], env=bash_cmd_env(),
+                               stdout=subprocess.DEVNULL if quiet else None,
+                               stderr=subprocess.DEVNULL if quiet else None)
             finally:
                 os.close(fifo_fd)
                 drain_thread.join()
@@ -1014,9 +1018,11 @@ def _profile(args: ProfileArgs):
         print(
             f"PROFILING: {shlex.quote(args.script)} to {profilefile}", file=sys.stderr
         )
-        subprocess.run(cmd, env=bash_cmd_env())
+        subprocess.run(cmd, env=bash_cmd_env(),
+                       stdout=subprocess.DEVNULL if quiet else None,
+                       stderr=subprocess.DEVNULL if quiet else None)
 
-    print(f"PROFING ENDED, output in {profilefile}", file=sys.stderr)
+    print(f"PROFILING ENDED, output in {profilefile}", file=sys.stderr)
 
 
 @click.group(
@@ -1134,7 +1140,7 @@ Profiles and analyzes a Bash script in one go.
 @click_help()
 @clickdc.adddc("args", RunArgs)
 def run(args: RunArgs):
-    with tempfile.NamedTemporaryFile() as tmp:
+    with tempfile.NamedTemporaryFile(prefix="L_bash_profile_", suffix=".txt") as tmp:
         # 1. Profile
         p_args = ProfileArgs()
         p_args.output = io.FileIO(tmp.name, "w")
@@ -1145,7 +1151,7 @@ def run(args: RunArgs):
         p_args.qemu = args.qemu
         p_args.script = args.script
         p_args.args = args.args
-        _profile(p_args)
+        _profile(p_args, quiet=True)
 
         if args.dryrun:
             return

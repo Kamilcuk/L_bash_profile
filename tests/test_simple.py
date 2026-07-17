@@ -13,14 +13,14 @@ def run(what: str, *args):
 
 
 def test_1():
-    with tempfile.NamedTemporaryFile() as f:
+    with tempfile.NamedTemporaryFile(prefix="L_bash_profile_test_", suffix=".txt") as f:
         tmpf = f.name
         run(
             "L_bash_profile profile --output %s 'f() { echo f; }; g() { f; echo g; }; g'",
             tmpf,
         )
         run("cat %s", tmpf)
-        with tempfile.NamedTemporaryFile() as f2:
+        with tempfile.NamedTemporaryFile(prefix="L_bash_profile_test_", suffix=".pstats") as f2:
             dotf = f2.name
             run("L_bash_profile analyze --pstats %s %s", dotf, tmpf)
             run("L_bash_profile showpstats %s", dotf)
@@ -28,7 +28,7 @@ def test_1():
 
 
 def test_qemu():
-    with tempfile.NamedTemporaryFile() as f:
+    with tempfile.NamedTemporaryFile(prefix="L_bash_profile_test_", suffix=".txt") as f:
         tmpf = f.name
         run("L_bash_profile profile --qemu -o %s 'a=1; b=2; c=$((a+b))'", tmpf)
         run("L_bash_profile analyze --qemu %s", tmpf)
@@ -104,6 +104,20 @@ def test_compare_exit_codes():
     assert data[0]["ExitCode"] == 0
     assert data[1]["Code"] == "exit 42"
     assert data[1]["ExitCode"] == 42
+
+
+def test_compare_show_output():
+    cmd = shlex.split("L_bash_profile compare -o 'echo MY_STDOUT_TEST_VAL' 'echo MY_STDERR_TEST_VAL >&2'")
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    assert "MY_STDOUT_TEST_VAL" in proc.stdout
+    assert "MY_STDERR_TEST_VAL" in proc.stdout
+
+
+def test_compare_qemu_show_output():
+    cmd = shlex.split("L_bash_profile compare -q -o 'echo MY_QEMU_STDOUT_TEST' 'echo MY_QEMU_STDERR_TEST >&2'")
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    assert "MY_QEMU_STDOUT_TEST" in proc.stdout
+    assert "MY_QEMU_STDERR_TEST" in proc.stdout
 
 
 def test_subprocess_kill():
