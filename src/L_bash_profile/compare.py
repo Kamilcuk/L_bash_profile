@@ -1,3 +1,4 @@
+import contextlib
 import os
 import shlex
 import statistics
@@ -82,13 +83,19 @@ class CompareArgs:
         help="Repeat the script n times inside a loop. Do not use in QEMU mode (deterministic).",
     )
     qemu: bool = clickdc.option(
-        "--qemu", is_flag=True, help="Shortcut for --method QEMU."
+        "-q", "--qemu", is_flag=True, help="Shortcut for --method QEMU."
     )
     perf: bool = clickdc.option(
         "--perf", is_flag=True, help="Shortcut for --method PERF."
     )
     json: bool = clickdc.option(
         "-j", "--json", is_flag=True, help="Output comparison results as JSON."
+    )
+    show_output: bool = clickdc.option(
+        "-o",
+        "--show-output",
+        is_flag=True,
+        help="Show stdout/stderr of the compared snippets.",
     )
     codes: Tuple[str, ...] = clickdc.argument(nargs=-1)
 
@@ -118,6 +125,20 @@ class TimeResult:
     exit_code: int
 
 
+@contextlib.contextmanager
+def run_drain_thread(fifo: str, profile_out: str):
+    drain_thread = threading.Thread(
+        target=qemu_output_drain_fifo, args=(fifo, profile_out)
+    )
+    drain_thread.start()
+    fifo_fd = os.open(fifo, os.O_WRONLY)
+    try:
+        yield fifo_fd
+    finally:
+        os.close(fifo_fd)
+        drain_thread.join()
+
+
 def _run_compare_snippet(
     i: int, args: CompareArgs, code: str
 ) -> Union[QemuResult, PerfResult, TimeResult]:
@@ -140,7 +161,13 @@ def _run_compare_snippet(
 
     if args.method == Method.QEMU:
         return _run_qemu(
-            script_template, before_cmd, suffix_cmd, code, repeat_start, repeat_end
+            script_template,
+            before_cmd,
+            suffix_cmd,
+            code,
+            repeat_start,
+            repeat_end,
+            args.show_output,
         )
     else:
         marker = str(uuid.uuid4())
@@ -153,9 +180,9 @@ def _run_compare_snippet(
             suffix=suffix_cmd,
         )
         if args.method == Method.PERF:
-            return _run_perf(script)
+            return _run_perf(script, args.show_output)
         else:  # TIME
-            return _run_time(script, marker)
+            return _run_time(script, marker, args.show_output)
 
 
 def _run_qemu(
@@ -165,20 +192,15 @@ def _run_qemu(
     script_code: str,
     repeat_start: str,
     repeat_end: str,
+    show_output: bool = False,
 ) -> QemuResult:
     with tempfile.TemporaryDirectory() as tmpdir:
         fifo = os.path.join(tmpdir, "fifo")
         os.mkfifo(fifo)
         profile_out = os.path.join(tmpdir, "out.txt")
 
-        drain_thread = threading.Thread(
-            target=qemu_output_drain_fifo, args=(fifo, profile_out)
-        )
-        drain_thread.start()
-
-        fifo_fd = os.open(fifo, os.O_WRONLY)
         exit_code = 0
-        try:
+        with run_drain_thread(fifo, profile_out) as fifo_fd:
             full_script = template.format(
                 before=before,
                 script=script_code,
@@ -201,12 +223,17 @@ def _run_qemu(
                 "/dev/null",
             ]
             proc = subprocess.run(
-                cmd, pass_fds=[fifo_fd], capture_output=True, env=bash_cmd_env()
+                cmd,
+                pass_fds=[fifo_fd],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=bash_cmd_env(),
             )
             exit_code = proc.returncode
-        finally:
-            os.close(fifo_fd)
-            drain_thread.join()
+            if show_output:
+                if proc.stdout:
+                    sys.stdout.buffer.write(proc.stdout)
+                    sys.stdout.flush()
 
         # Parse out.txt for START and STOP markers
         samples = []
@@ -221,30 +248,44 @@ def _run_qemu(
         return QemuResult(samples=samples, exit_code=exit_code)
 
 
-def _run_time(script: str, marker: str) -> TimeResult:
+def _run_time(script: str, marker: str, show_output: bool = False) -> TimeResult:
     samples = []
     cmd = [*bash_cmd(), "-c", script, "bash"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=bash_cmd_env())
-    # Bash 'time' output goes to stderr
-    for line in proc.stderr.splitlines():
-        if line.startswith(marker + " "):
-            parts = line.split()
-            if len(parts) >= 4:
-                try:
-                    # Capture real, user, system in seconds
-                    samples.append(
-                        TimeSample(
-                            real=float(parts[1]),
-                            user=float(parts[2]),
-                            sys=float(parts[3]),
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=bash_cmd_env(),
+    )
+    if show_output:
+        if proc.stdout:
+            for line in proc.stdout.splitlines():
+                if not line.startswith(marker + " "):
+                    sys.stdout.write(line + "\n")
+            sys.stdout.flush()
+
+    # Bash 'time' output goes to stdout (since stderr redirected to stdout)
+    if proc.stdout:
+        for line in proc.stdout.splitlines():
+            if line.startswith(marker + " "):
+                parts = line.split()
+                if len(parts) >= 4:
+                    try:
+                        # Capture real, user, system in seconds
+                        samples.append(
+                            TimeSample(
+                                real=float(parts[1]),
+                                user=float(parts[2]),
+                                sys=float(parts[3]),
+                            )
                         )
-                    )
-                except ValueError:
-                    continue
+                    except ValueError:
+                        continue
     return TimeResult(samples=samples, exit_code=proc.returncode)
 
 
-def _run_perf(script: str) -> PerfResult:
+def _run_perf(script: str, show_output: bool = False) -> PerfResult:
     # perf stat -e instructions bash -c ...
     cmd = [
         "perf",
@@ -258,17 +299,31 @@ def _run_perf(script: str) -> PerfResult:
         "bash",
         "/dev/null",
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=bash_cmd_env())
-    # Parse perf output (stderr)
-    for line in proc.stderr.splitlines():
-        if "instructions" in line:
-            # Example line: "         1,234,567      instructions              #    0.50  insn per cycle"
-            parts = line.strip().split()
-            if parts:
-                return PerfResult(
-                    instructions=float(parts[0].replace(",", "").replace(".", "")),
-                    exit_code=proc.returncode,
-                )
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=bash_cmd_env(),
+    )
+    if show_output:
+        if proc.stdout:
+            for line in proc.stdout.splitlines():
+                if "instructions" not in line and "Performance counter stats" not in line and "seconds time elapsed" not in line and "seconds user" not in line and "seconds sys" not in line:
+                    sys.stdout.write(line + "\n")
+            sys.stdout.flush()
+
+    # Parse perf output (now in stdout because stderr is redirected to stdout)
+    if proc.stdout:
+        for line in proc.stdout.splitlines():
+            if "instructions" in line:
+                # Example line: "         1,234,567      instructions              #    0.50  insn per cycle"
+                parts = line.strip().split()
+                if parts:
+                    return PerfResult(
+                        instructions=float(parts[0].replace(",", "").replace(".", "")),
+                        exit_code=proc.returncode,
+                    )
     return PerfResult(instructions=0.0, exit_code=proc.returncode)
 
 
