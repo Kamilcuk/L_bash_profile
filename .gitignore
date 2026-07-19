@@ -15,3 +15,4 @@ venv/
 
 profile.*
 tmp
+.claude/settings.local*
