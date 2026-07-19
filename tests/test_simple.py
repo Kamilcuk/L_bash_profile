@@ -52,7 +52,7 @@ def test_compare_sanity():
     
     # Parse the Insn values
     lines = [line.strip() for line in stdout.splitlines() if "|" in line]
-    data_lines = [l for l in lines if "Code" not in l and "---" not in l]
+    data_lines = [ln for ln in lines if "Code" not in ln and "---" not in ln]
     
     assert len(data_lines) == 2
     
@@ -123,3 +123,32 @@ def test_compare_qemu_show_output():
 def test_subprocess_kill():
     # Spawns a background sleep, checks if alive with kill -0, kills it, and waits on it
     run("L_bash_profile run --qemu --callstatscmds 'sleep 10 & sub_pid=$!; kill -0 $sub_pid; kill $sub_pid; wait $sub_pid 2>/dev/null || true'")
+
+
+def test_qemu_function_profiling():
+    """Test that QEMU profiling works with function definitions and calls.
+
+    This reproduces the bug where 'f() { echo 1; }; f' produces empty results
+    because the bash DEBUG trap output doesn't reach the FIFO when using QEMU.
+    """
+    import json
+    import subprocess
+    import shlex
+
+    cmd = shlex.split("L_bash_profile run --json -m qemu 'f() { echo 1; }; f'")
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    data = json.loads(proc.stdout)
+
+    # Should have non-zero total time (instructions)
+    assert data["total_time"] > 0, f"Expected total_time > 0, got {data['total_time']}"
+
+    # Should have commands recorded
+    assert len(data["commands"]) > 0, "Expected commands, got empty list"
+
+    # Should have function 'f' recorded
+    func_names = [f["funcname"] for f in data["functions"]]
+    assert "f" in func_names, f"Expected function 'f' in {func_names}"
+
+    # Function 'f' should have calls > 0
+    f_func = next(f for f in data["functions"] if f["funcname"] == "f")
+    assert f_func["calls"] > 0, f"Expected calls > 0 for function 'f', got {f_func['calls']}"

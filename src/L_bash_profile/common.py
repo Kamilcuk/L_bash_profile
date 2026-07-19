@@ -38,7 +38,7 @@ def qemu_output_drain_fifo(fifo_path: str, out_path: str):
             for line in fin:
                 if line.startswith("Trace "):
                     insn_count += 1
-                elif " kill(" in line and "(null)" in line:
+                elif " kill(" in line:
                     line_stripped = line.strip()
                     parts = line_stripped.split()
                     if len(parts) >= 2 and parts[1].startswith("kill("):
@@ -89,6 +89,19 @@ def qemu_output_drain_fifo(fifo_path: str, out_path: str):
                             pass
                 elif line.startswith("# 0 "):
                     buffered_marker_line = line
+                elif " write(" in line and "# 0 " in line:
+                    # Parse DEBUG trap output from write syscall trace
+                    # Format: PID write(FD, BUF, LEN)# 0 PID LEVEL SOURCE FUNCNAME CMD
+                    # The DEBUG trap output is appended after the write syscall trace
+                    try:
+                        # Extract the DEBUG trap output after the write syscall trace
+                        # Line format: "PID write(FD, BUF, LEN)# 0 PID LEVEL SOURCE FUNCNAME CMD"
+                        # The DEBUG trap output starts at "# 0 "
+                        idx = line.index("# 0 ")
+                        marker_line = line[idx:].rstrip("\n")
+                        buffered_marker_line = marker_line + "\n"
+                    except Exception:
+                        pass
                 elif line.strip() == "S" or ("write(" in line and line.strip().endswith(")S")):
                     # Simple Start marker fallback
                     fout.write(f"START {insn_count - cumulative_overhead}\n")

@@ -968,6 +968,7 @@ def _profile(args: ProfileArgs, quiet: bool = False):
     )
     cmd = [*bash_cmd(), "-c", script, "bash", profilefile, *args.args]
     if args.method in ["4", "QEMU"]:
+        # Create FIFO in temporary directory (like compare command does)
         with tempfile.TemporaryDirectory() as tmpdir:
             fifo = os.path.join(tmpdir, "fifo")
             os.mkfifo(fifo)
@@ -977,9 +978,13 @@ def _profile(args: ProfileArgs, quiet: bool = False):
             )
             drain_thread.start()
 
+            # Open FIFO for writing and pass to QEMU (like compare command does)
+            # This makes QEMU write strace to the FIFO via the passed FD
+            # The guest script also writes DEBUG trap output to the same FD
             fifo_fd = os.open(fifo, os.O_WRONLY)
+
             try:
-                # Replace FD placeholder in the script
+                # Replace FIFO path placeholder in the script with the FD number
                 script = script.replace("%FD%", str(fifo_fd))
 
                 cmd = [
@@ -1005,11 +1010,17 @@ def _profile(args: ProfileArgs, quiet: bool = False):
                     f"PROFILING: {shlex.quote(args.script)} to {profilefile}",
                     file=sys.stderr,
                 )
-                subprocess.run(cmd, pass_fds=[fifo_fd], env=bash_cmd_env(),
-                               stdout=subprocess.DEVNULL if quiet else None,
-                               stderr=subprocess.DEVNULL if quiet else None)
+                # Use Popen as context manager so we can close the FD immediately after spawn
+                with subprocess.Popen(cmd, pass_fds=[fifo_fd], env=bash_cmd_env(),
+                                      stdout=subprocess.DEVNULL if quiet else None,
+                                      stderr=subprocess.DEVNULL if quiet else None) as proc:
+                    # Close our copy of the FD immediately - QEMU has its own copy
+                    os.close(fifo_fd)
+                    fifo_fd = None
+                    proc.wait()
             finally:
-                os.close(fifo_fd)
+                if fifo_fd is not None:
+                    os.close(fifo_fd)
                 drain_thread.join()
     else:
         if args.dryrun:
