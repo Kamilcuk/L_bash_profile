@@ -44,10 +44,10 @@ def func(v: str) -> str:
         return v
     m = FUNC_RE.match(v)
     if m:
-        f, l, n, p = m.groups()
+        file_part, line_no, func_name, paren = m.groups()
         # file: gray, line: white, func: bold cyan
-        # p contains the optional closing parenthesis if it existed
-        return f"{style(f, fg='bright_black')}:{l}({style(n, fg='cyan', bold=True)}{p}"
+        # paren contains the optional closing parenthesis if it existed
+        return f"{style(file_part, fg='bright_black')}:{line_no}({style(func_name, fg='cyan', bold=True)}{paren}"
     return style(v, fg="cyan")
 
 
