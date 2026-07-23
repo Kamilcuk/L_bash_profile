@@ -92,10 +92,10 @@ class CompareArgs:
         "-j", "--json", is_flag=True, help="Output comparison results as JSON."
     )
     show_output: bool = clickdc.option(
-        "-o",
-        "--show-output",
-        is_flag=True,
-        help="Show stdout/stderr of the compared snippets.",
+        "-o/-O",
+        "--show-output/--no-show-output",
+        default=True,
+        help="Show stdout/stderr of the compared snippets (enabled by default).",
     )
     codes: Tuple[str, ...] = clickdc.argument(nargs=-1)
 
