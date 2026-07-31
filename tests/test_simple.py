@@ -1,10 +1,14 @@
 import subprocess
 import shlex
 import tempfile
+import shutil
 
 import pytest
 
-from L_bash_profile.common import is_qemu_available
+
+def is_qemu_available() -> bool:
+    """Check if qemu-x86_64 is available in PATH."""
+    return shutil.which("qemu-x86_64") is not None
 
 
 def run(what: str, *args):
