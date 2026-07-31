@@ -13,6 +13,8 @@ jobs:
         with:
           python-version: "3.9"
           cache-dependency-glob: "uv.lock"
+      - name: Install QEMU
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
       - name: Install package and test dependencies
         run: uv sync --all-extras
       - name: Run basedpyright
