@@ -19,6 +19,12 @@ from tabulate import tabulate
 from .common import bash_cmd, bash_cmd_env, qemu_output_drain_fifo
 
 
+def _method_callback(ctx, param, value):
+    if isinstance(value, Method):
+        return value
+    return Method[value.upper()]
+
+
 class Method(Enum):
     TIME = r"""
 {before}
@@ -66,11 +72,12 @@ class CompareArgs:
         show_default=True,
         help="Common suffix to run after each code snippet.",
     )
-    method: Method = clickdc.option(
+    method: Method = clickdc.option(  # type: ignore[assignment]
         "-m",
         "--method",
-        default=Method.TIME,
-        type=click.Choice(Method, case_sensitive=False),
+        default=Method.TIME.name,
+        type=click.Choice([m.name for m in Method], case_sensitive=False),
+        callback=_method_callback,
         show_default=True,
         help="Comparison method: TIME (wall-clock), QEMU (instruction count), PERF (linux perf).",
     )
