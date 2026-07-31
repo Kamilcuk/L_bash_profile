@@ -2,6 +2,10 @@ import subprocess
 import shlex
 import tempfile
 
+import pytest
+
+from L_bash_profile.common import is_qemu_available
+
 
 def run(what: str, *args):
     what = what % tuple([shlex.quote(x) if isinstance(x, str) else x for x in args])
@@ -28,6 +32,8 @@ def test_1():
 
 
 def test_qemu():
+    if not is_qemu_available():
+        pytest.skip("QEMU not available")
     with tempfile.NamedTemporaryFile(prefix="L_bash_profile_test_", suffix=".txt") as f:
         tmpf = f.name
         run("L_bash_profile profile --qemu -o %s 'a=1; b=2; c=$((a+b))'", tmpf)
@@ -35,38 +41,44 @@ def test_qemu():
 
 
 def test_run():
+    if not is_qemu_available():
+        pytest.skip("QEMU not available")
     run("L_bash_profile run --qemu --callstatscmds 'f() { :; }; f'")
 
 
 def test_compare():
     run("L_bash_profile compare --prefix 'a=1' --suffix 'echo $a' 'a=2'")
+    if not is_qemu_available():
+        pytest.skip("QEMU not available")
     run("L_bash_profile compare --qemu --prefix 'a=1' --suffix 'echo $a' 'a=2'")
 
 
 def test_compare_sanity():
+    if not is_qemu_available():
+        pytest.skip("QEMU not available")
     # Run compare and capture output
     cmd = shlex.split("L_bash_profile compare -m qemu '' 'a=1'")
     proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
     stdout = proc.stdout
     print(stdout)
-    
+
     # Parse the Insn values
     lines = [line.strip() for line in stdout.splitlines() if "|" in line]
     data_lines = [ln for ln in lines if "Code" not in ln and "---" not in ln]
-    
+
     assert len(data_lines) == 2
-    
+
     parts_empty = [p.strip() for p in data_lines[0].split("|") if p.strip()]
     parts_a1 = [p.strip() for p in data_lines[1].split("|") if p.strip()]
-    
+
     assert parts_empty[1] == "0"
     assert parts_a1[1] == "0"
-    
+
     empty_insn = int(parts_empty[2])
     a1_insn = int(parts_a1[2])
-    
+
     print(f"Parsed empty_insn: {empty_insn}, a1_insn: {a1_insn}")
-    
+
     assert empty_insn >= 0
     assert a1_insn > empty_insn
     assert a1_insn > 1000
@@ -82,6 +94,9 @@ def test_json_output():
     assert "commands" in data
     assert "functions" in data
     assert any(f["funcname"] == "f" for f in data["functions"])
+
+    if not is_qemu_available():
+        pytest.skip("QEMU not available")
 
     # Test L_bash_profile compare --json
     cmd_compare = shlex.split("L_bash_profile compare --qemu --json '' 'a=1'")
@@ -114,6 +129,8 @@ def test_compare_show_output():
 
 
 def test_compare_qemu_show_output():
+    if not is_qemu_available():
+        pytest.skip("QEMU not available")
     cmd = shlex.split("L_bash_profile compare -q -o 'echo MY_QEMU_STDOUT_TEST' 'echo MY_QEMU_STDERR_TEST >&2'")
     proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
     assert "MY_QEMU_STDOUT_TEST" in proc.stdout
@@ -121,6 +138,8 @@ def test_compare_qemu_show_output():
 
 
 def test_subprocess_kill():
+    if not is_qemu_available():
+        pytest.skip("QEMU not available")
     # Spawns a background sleep, checks if alive with kill -0, kills it, and waits on it
     run("L_bash_profile run --qemu --callstatscmds 'sleep 10 & sub_pid=$!; kill -0 $sub_pid; kill $sub_pid; wait $sub_pid 2>/dev/null || true'")
 
@@ -134,6 +153,9 @@ def test_qemu_function_profiling():
     import json
     import subprocess
     import shlex
+
+    if not is_qemu_available():
+        pytest.skip("QEMU not available")
 
     cmd = shlex.split("L_bash_profile run --json -m qemu 'f() { echo 1; }; f'")
     proc = subprocess.run(cmd, capture_output=True, text=True, check=True)

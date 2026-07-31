@@ -8,6 +8,11 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
+def is_qemu_available() -> bool:
+    """Check if qemu-x86_64 is available in PATH."""
+    return shutil.which("qemu-x86_64") is not None
+
+
 def bash_cmd():
     exe = shutil.which("bash") or "bash"
     return [exe, "--norc", "--noprofile"]
