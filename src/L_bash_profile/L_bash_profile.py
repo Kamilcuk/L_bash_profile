@@ -661,20 +661,22 @@ class Analyzer:
         funcs: dict[FunctionKey, FunctionStats] = {}
 
         def traverse(node: CallgraphNode):
-            if node.function not in funcs:
-                funcs[node.function] = FunctionStats()
-            funcs[node.function].calls += 1
-            funcs[node.function].spent += node.totaltime
-            funcs[node.function].spent_exclusive += node.inlinetime
+            # Skip the root node (empty function name) as it represents the main script, not a real function
+            if node.function.funcname:
+                if node.function not in funcs:
+                    funcs[node.function] = FunctionStats()
+                funcs[node.function].calls += 1
+                funcs[node.function].spent += node.totaltime
+                funcs[node.function].spent_exclusive += node.inlinetime
 
-            def collect_records(n: CallgraphNode):
-                for rr in n.records:
-                    if isinstance(rr, Record):
-                        funcs[node.function].records.append(rr)
-                    else:
-                        collect_records(rr)
+                def collect_records(n: CallgraphNode):
+                    for rr in n.records:
+                        if isinstance(rr, Record):
+                            funcs[node.function].records.append(rr)
+                        else:
+                            collect_records(rr)
 
-            collect_records(node)
+                collect_records(node)
 
             for rr in node.records:
                 if isinstance(rr, CallgraphNode):
