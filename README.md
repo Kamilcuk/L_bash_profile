@@ -50,6 +50,36 @@ Profiles and analyzes a Bash script in one go. This is a convenient shortcut tha
 
 ```bash
 $ L_bash_profile run --qemu --callstatscmds 'f() { :; }; f'
+PROFILING: 'f() { :; }; f' to /tmp/L_bash_profile__630o4w7.txt
+PROFILING ENDED, output in /tmp/L_bash_profile__630o4w7.txt
+Top 10 longest commands (total):
+      %  us       cmd       calls  spent/call    caller1    caller2    caller3    location
+-------  -------  ------  -------  ------------  ---------  ---------  ---------  ----------
+64.1166  192,869  f             2  96,434.5      \>         f                     \<:6
+35.8834  107,941  :             1  107,941       f                                bash:6
+ 0       0        :\ END        1  0             \>                               \<:7
+
+Top 10 longest commands (per call):
+      %  us       cmd       calls  spent/call    caller1    caller2    caller3    location
+-------  -------  ------  -------  ------------  ---------  ---------  ---------  ----------
+35.8834  107,941  :             1  107,941       f                                bash:6
+64.1166  192,869  f             2  96,434.5      \>         f                     \<:6
+ 0       0        :\ END        1  0             \>                               \<:7
+
+Top 10 longest functions (total):
+      %  incl     excl     func         calls  spent/call    location
+-------  -------  -------  ---------  -------  ------------  ----------
+65.3934  196,710  196,710  bash:6(f)        1  196,710       bash:6
+
+Top 10 longest functions (per call):
+      %  incl     excl     func         calls  spent/call    location
+-------  -------  -------  ---------  -------  ------------  ----------
+65.3934  196,710  196,710  bash:6(f)        1  196,710       bash:6
+
+Call Tree (top 3 children):
+└── bash:6(f) 196,710ins 65.4%
+
+Script executed in 300810 instructions, 4 instructions, 2 functions.
 ```
 
 ### `compare`
@@ -57,7 +87,16 @@ Compares the performance of multiple Bash code snippets. It runs the snippets an
 Supports `--qemu` for deterministic, warm-calibrated instruction counts, `--prefix` to set up initial state, and `--suffix` / `-S` to execute a common command after each snippet.
 
 ```bash
-$ L_bash_profile compare --qemu --prefix 'a=1' '' 'a=2'
+$ L_bash_profile compare --qemu --prefix 'trim() { a=${a//1}; };' '' 'a=11' 'a=22'
+Benchmarking 1/3: ''
+Benchmarking 2/3: a=11
+Benchmarking 3/3: a=22
+Comparison results (method: QEMU, repeat: 1):
+| Code   | ExitCode   | Insn   | ΔInsn   |
+|--------|------------|--------|---------|
+| ''     | 0          | 6580   | -       |
+| a=11   | 0          | 21623  | +15043  |
+| a=22   | 0          | 21623  | +0      |
 ```
 
 ### `profile`
