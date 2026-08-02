@@ -155,3 +155,7 @@ Contributions are welcome! If you find a bug or have a feature request, please o
 ## License
 
 This project is licensed under the GPLv3 License. See the [LICENSE.txt](LICENSE.txt) file for details.
+
+## Self promotion
+
+Check out my other shell related projects: [mkdocstrings-sh](https://github.com/kamilcuk/mkdocstrings-sh), [L_lib](https://github.com/Kamilcuk/L_lib), [L_builtin](https://github.com/Kamilcuk/L_builtin).
