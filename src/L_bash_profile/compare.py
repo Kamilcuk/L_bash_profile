@@ -103,6 +103,7 @@ class CompareArgs:
         "--show-output/--no-show-output",
         default=True,
         help="Show stdout/stderr of the compared snippets (enabled by default).",
+        clickdc=None,
     )
     codes: Tuple[str, ...] = clickdc.argument(nargs=-1)
 
