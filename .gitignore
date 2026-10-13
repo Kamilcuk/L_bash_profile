@@ -16,3 +16,5 @@ venv/
 profile.*
 tmp
 .claude/settings.local*
+temp
+status.md

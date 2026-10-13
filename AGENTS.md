@@ -28,4 +28,14 @@
   - `src/L_bash_profile.py`: Single-file Python implementation for both profiling logic and CLI.
   - `scripts/`: Contains helper Bash scripts (like `bash_profile.sh` which implements the `DEBUG` trap logic) and usage examples.
   - `doc/QEMU_PROFILING.md`: Detailed documentation for the high-precision QEMU profiling architecture.
+  - `doc/PROFILING_WORKFLOW.md`: Correct benchmarking methodology (READ THIS FIRST).
 - **Contribution**: Follow existing patterns in `src/L_bash_profile.py`. Use `click` for new CLI options.
+
+## Profiling Methodology
+
+**Critical**: QEMU profiling (`--qemu`) only traces the **main bash process**. It does NOT count instructions in forked children (external commands, subshells, pipelines).
+
+See `doc/PROFILING_WORKFLOW.md` for complete methodology including:
+- Correct profiling methods by use case
+- Shared-state benchmarking pattern (using `source ./temp/setup.sh`)
+- Common pitfalls and anti-patterns
